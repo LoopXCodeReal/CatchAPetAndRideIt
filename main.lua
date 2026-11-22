@@ -4310,6 +4310,7 @@ buildWindUI()
 do
     local RADIUS_WINDOW = UDim.new(0, 16)
     local WINDOW_BG = Color3.fromRGB(14, 16, 24)
+    local RESIZE_GRIP_IMAGE = "120997033468887"
 
     local function ensureCorner(obj, radius)
         if not obj or not obj:IsA("GuiObject") then return nil end
@@ -4354,6 +4355,14 @@ do
     local function isShadowLike(obj)
         local name = string.lower(tostring(obj.Name or ""))
         if name:find("shadow", 1, true) then return true end
+
+        -- Grip resize WindUI: image 96x96 di dalam frame 32x32. Jangan
+        -- dikira bayangan, karena ini pegangan putih pojok kanan bawah.
+        if obj:IsA("ImageLabel") then
+            local ok, img = pcall(function() return obj.Image end)
+            if ok and tostring(img):find(RESIZE_GRIP_IMAGE, 1, true) then return false end
+        end
+
         if #obj:GetChildren() > 0 then return false end
         local parent = obj.Parent
         if not parent or not parent:IsA("GuiObject") then return false end
@@ -4370,6 +4379,24 @@ do
             end
             obj.BackgroundTransparency = 1
         end)
+    end
+
+    -- WindUI menween grip resize ke 0.8 saat Open dan 0.35 saat hover.
+    -- Sapuan radius jangan mematikan grip ini; kalau pernah ketutup, nyalakan
+    -- lagi tanpa merusak transparansi hover.
+    local function restoreResizeGrip(root)
+        if not root then return end
+        for _, o in ipairs(root:GetDescendants()) do
+            if o:IsA("ImageLabel") then
+                local ok, img = pcall(function() return o.Image end)
+                if ok and tostring(img):find(RESIZE_GRIP_IMAGE, 1, true) then
+                    pcall(function()
+                        o.Visible = true
+                        if o.ImageTransparency >= 0.99 then o.ImageTransparency = 0.8 end
+                    end)
+                end
+            end
+        end
     end
 
     local function polish(obj)
@@ -4417,6 +4444,7 @@ do
         ensureCorner(root, RADIUS_WINDOW)
         pcall(function() root.BackgroundColor3 = WINDOW_BG end)
         for _, o in ipairs(root:GetDescendants()) do polish(o) end
+        restoreResizeGrip(root)
     end
 
     local root = nil
