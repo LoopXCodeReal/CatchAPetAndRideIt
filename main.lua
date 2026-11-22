@@ -11,6 +11,7 @@
     ====================================================================
 ]]
 
+getgenv().LXC_START_MARKER = os.clock()
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -23,6 +24,7 @@ local Workspace = game:GetService("Workspace")
 local CollectionService = game:GetService("CollectionService")
 
 local LocalPlayer = Players.LocalPlayer
+local USE_EXTERNAL_UI = true
 local genv = (type(getgenv) == "function") and getgenv() or _G
 -- execute-file tidak memberi STATE, jadi pakai epoch sendiri supaya loop dari
 -- run lama berhenti saat file dijalankan ulang.
@@ -109,6 +111,7 @@ local LANG_TEXT = {
     ["Auto Catch"] = "Tangkap Otomatis", ["Catch Reel"] = "Mode Reel",
     ["Catch Rarity (tier)"] = "Rarity Tangkap (tier)", ["Catch Zone"] = "Zona Tangkap",
     ["Min Income"] = "Income Minimum", ["Auto Equip Best Speed"] = "Auto Equip Kecepatan Terbaik",
+    ["Walk Speed"] = "Kecepatan Jalan", ["Walk speed used by Auto Catch in studs/sec (16-400)"] = "Kecepatan jalan Auto Catch dalam studs/detik (16-400)",
     ["Find Pet"] = "Cari Pet", ["Biome / Map"] = "Biome / Map",
     ["Refresh Finder"] = "Segarkan Pencari", ["Apply Safe Fonts"] = "Terapkan Font Aman",
     ["Menu Background"] = "Latar Menu", ["Skip Tutorial"] = "Lewati Tutorial",
@@ -331,10 +334,21 @@ local loadingTween = TweenService:Create(LoadingBar, TweenInfo.new(0.9, Enum.Eas
     Position = UDim2.new(1, -42, 0, 0)
 })
 loadingTween:Play()
+genv.LoopXCode_LoadStarted = os.clock()
+
+-- Ambil WindUI dari jaringan SEKETIKA loading GUI sudah terlihat, parallel
+-- dengan inisialisasi modul game. Tanpa ini semua nunggu HttpGet di akhir build.
+local WINDUI_URL = "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"
+local winduiSource = nil
+task.spawn(function()
+    local ok, src = pcall(function() return game:HttpGet(WINDUI_URL, true) end)
+    if ok and type(src) == "string" and #src > 0 then winduiSource = src end
+end)
 
 local closeLoadingOverlay = function()
     pcall(function() loadingTween:Cancel() end)
     pcall(function() LoadingGui:Destroy() end)
+    genv.LoopXCode_LoadFinished = os.clock()
 end
 OnCleanup(closeLoadingOverlay)
 
@@ -462,7 +476,15 @@ local ZONE_NAMES = {
     "Prehistoric", "Sakura", "Candy", "Crystal Cave", "Heaven",
     "Cosmic", "Dragon Realm", "Shadow Realm"
 }
+local ZONE_CENTERS = {
+    Grass = -60, Desert = -275, Jungle = -525, Snow = -750,
+    Volcano = -1080, ["Abyss Ocean"] = -1430, Prehistoric = -1900,
+    Sakura = -2500, Candy = -3200, ["Crystal Cave"] = -4100,
+    Heaven = -5300, Cosmic = -6450, ["Dragon Realm"] = -7900,
+    ["Shadow Realm"] = -9500
+}
 genv.LoopXCode_ZoneNames = ZONE_NAMES
+genv.LoopXCode_ZoneCenters = ZONE_CENTERS
 
 -- Zona asal wild pet dibaca langsung dari BiomeConfig milik game.
 local function zoneAtZ(z)
@@ -503,6 +525,8 @@ local R_STEAL = {
     FinishCapture = RemoteFolder:WaitForChild("FinishCapture"),
     PenPetAction = RemoteFolder:WaitForChild("PenPetAction")
 }
+-- Remote secure harus tersedia SEBELUM escapeToSafeZone/secureCarry dipakai.
+local R_SECURE = RemoteFolder:FindFirstChild("SecureCatch")
 
 -- Kalau reel keputus / StartCapture gagal, sesi Capturing bisa nyangkut di
 -- server. Fire cancel supaya attempt berikutnya nggak ditolak terus.
@@ -521,7 +545,8 @@ local StealCfg = {
     CustomIncome = "",     -- min income: 5k / 30b / 50t / kosong = semua
     Priority = "Any",           -- tetap Any; fokus filter cuma Rarity + Min Income
     ReelMode = "Safe",
-    WeakAllowed = false       -- Experimen: boleh tangkap walau lasso kurang kuat
+    WeakAllowed = false,      -- Experimen: boleh tangkap walau lasso kurang kuat
+    WalkSpeed = 400           -- kecepatan jalan Auto Catch (default cepat, bisa diatur dari menu)
 }
 genv.LoopXCode_StealCfg = StealCfg
 
@@ -642,16 +667,29 @@ local STEAL_OWNER = tostring(os.clock()) .. ":" .. tostring(math.random(1, 10000
 -- replikasi CFrame + pull numpuk dan gameplay kelihatan pause. Sekarang ada
 -- jeda nyata. Masih bisa di-tuning lewat genv.LoopXCode_Pace kalau perlu.
 local Pace = {
-    Walk = 0.08,        -- Safe: jeda antar langkah 6 stud
-    Teleport = 0.04,    -- Fast: jeda antar teleport kecil
-    Reel = 0.06,        -- Safe: jeda loop reel
-    Pull = 0.14,        -- Safe: jeda antar CapturePull
-    Settle = 0.18,      -- Safe: jeda setelah remote / sebelum siklus lanjut
-    FastReel = 0.022,   -- Fast: loop reel jauh lebih rapat
-    FastPull = 0.055,   -- Fast: pull lebih sering, tapi masih valid
-    FastSettle = 0.08   -- Fast: sinkronisasi minimal
+    Walk = 0.05,        -- Safe: jeda antar langkah 6 stud
+    Teleport = 0.03,    -- Fast: jeda antar teleport kecil
+    Reel = 0.1,         -- game membatasi CapturePull ke 10 Hz
+    Pull = 0.1,         -- Safe: 10 Hz, sama seperti klien asli game
+    Settle = 0.08,      -- Safe: jeda setelah remote / sebelum siklus lanjut
+    FastReel = 0.05,    -- Fast: loop reel tetap 10 Hz untuk pull
+    FastPull = 0.1,     -- Fast: jangan lebih cepat dari throttle server
+    FastSettle = 0.05   -- Fast: sinkronisasi minimal
 }
 genv.LoopXCode_Pace = Pace
+
+-- WildPets ke-stream: yang jauh nggak masuk workspace.WildPets sampai char
+-- dekat. Kalau filter nggak nemu target, hub keliling zone (urutan Z dari
+-- BiomeConfig) supaya pet yang "aslinya ada" ke-load dulu. Tetap strict:
+-- yang diambil cuma tier yang dipilih.
+local SCAN_ZONES = {
+    Vector3.new(0, 10, -80), Vector3.new(0, 10, -256), Vector3.new(0, 10, -472),
+    Vector3.new(0, 10, -736), Vector3.new(0, 10, -1056), Vector3.new(0, 10, -1448),
+    Vector3.new(0, 10, -1900), Vector3.new(0, 10, -2700), Vector3.new(0, 10, -3100),
+    Vector3.new(0, 10, -4100), Vector3.new(0, 10, -5300), Vector3.new(0, 10, -6500),
+    Vector3.new(0, 10, -7900), Vector3.new(0, 10, -9500), Vector3.new(0, 10, -10200)
+}
+local scanIndex = 1
 
 local function isFastReel()
     return StealCfg.ReelMode == "Fast"
@@ -693,8 +731,10 @@ end
 local function parseIncome(text)
     local raw = string.lower(tostring(text or ""))
     raw = raw:gsub("[%s,_]+", "")
-    if raw == "" or raw == "any" or raw == "all" then return 0 end
-    local num, suffix = raw:match("^(%d+%.?%d*)([kmbtq]?)$")
+    -- Ambil angka PERTAMA yang ada, bukan harus seluruh string. Jadi semua
+    -- format ini tetap jalan: 5k / 30b / 50t / 5M / 5M+ / 5M or more /
+    -- min 5M / 5m ke atas / 5m atau lebih. Tanpa angka = any.
+    local num, suffix = raw:match("(%d+%.?%d*)([kmbtq]?)")
     if not num then return 0 end
     local mult = ({ k = 1e3, m = 1e6, b = 1e9, t = 1e12, q = 1e15 })[suffix] or 1
     return (tonumber(num) or 0) * mult
@@ -763,7 +803,7 @@ local function matchesFilter(info)
     if not info then return false end
     local min = parseIncome(StealCfg.CustomIncome)
     if min > 0 and info.income < min then return false end
-    local want = StealCfg.Rarity
+    local want = StealCfg.EffectiveRarity or StealCfg.Rarity
     if want ~= "Any" and want ~= "" and want ~= nil then
         if tostring(info.tier or "") ~= want then return false end
     end
@@ -777,6 +817,8 @@ genv.LoopXCode_MatchesFilter = matchesFilter
 
 -- updateStealInfo diisi ulang oleh section UI (paragraph WindUI).
 local updateStealInfo = function() end
+-- syncRarityUI diisi ulang setelah dropdown Catch Rarity dibuat.
+local syncRarityUI = function() end
 
 local function priorityScore(info, charRoot)
     -- Priority selalu "Any": ambil yang terdekat di antara pet yang lolos
@@ -825,19 +867,38 @@ end
 local function ensureLasso()
     local char = LocalPlayer.Character
     if not char then return false end
-    if char:FindFirstChild("Lasso") then return true end
     local hum = char:FindFirstChildOfClass("Humanoid")
-    local tool = LocalPlayer.Backpack and LocalPlayer.Backpack:FindFirstChild("Lasso")
-    if hum and tool then pcall(function() hum:EquipTool(tool) end) end
+    local tool = char:FindFirstChild("Lasso")
+        or (LocalPlayer.Backpack and LocalPlayer.Backpack:FindFirstChild("Lasso"))
+    if not tool then return false end
+    if tool.Parent == char and tool:IsA("Tool") then return true end
+    if hum then
+        -- Game suka otomatis nge-equip Tool pet (punya atribut PetId).
+        -- Itu menggantikan Lasso di Character, lalu StartCapture ditolak
+        -- "Equip your Lasso!". Copot dulu Tool pet sebelum equip ulang.
+        for _, equipped in ipairs(char:GetChildren()) do
+            if equipped:IsA("Tool") and equipped ~= tool then
+                pcall(function() hum:UnequipTool(equipped) end)
+            end
+        end
+        pcall(function() hum:EquipTool(tool) end)
+    end
     for _ = 1, 20 do
         if char:FindFirstChild("Lasso") then return true end
         task.wait(0.1)
     end
     return char:FindFirstChild("Lasso") ~= nil
 end
+genv.LoopXCode_EnsureLasso = ensureLasso
 
--- Kecepatan jalan untuk mode Safe (bukan jalan 1.6 stud/langkah).
-local FAST_WALK_SPEED = 70
+local function configuredWalkSpeed(fallback)
+    local v = tonumber(StealCfg and StealCfg.WalkSpeed)
+    if not v or v < 16 then v = tonumber(fallback) or 70 end
+    if v < 16 then v = 16 end
+    if v > 400 then v = 400 end
+    return v
+end
+genv.LoopXCode_ConfiguredWalkSpeed = configuredWalkSpeed
 
 local function setWalkSpeed(char, speed)
     if not char then return end
@@ -876,7 +937,7 @@ local function rushToPoint(rootPart, getPoint, stopDist, timeout, speed)
     local hum = rootPart.Parent and rootPart.Parent:FindFirstChildOfClass("Humanoid")
     if not hum then return false end
     local oldSpeed = hum.WalkSpeed
-    hum.WalkSpeed = speed or 120
+    hum.WalkSpeed = tonumber(speed) or configuredWalkSpeed(120)
     local started = os.clock()
     local lastIssue = 0
     local ok = false
@@ -919,37 +980,12 @@ local function stageToZone(rootPart, zoneOverride)
     local targetZ = (startZ + finishZ) / 2
     rushToPoint(rootPart, function()
         return Vector3.new(0, rootPart.Position.Y, targetZ)
-    end, 6, 90, 120)
+    end, 6, 90, configuredWalkSpeed(120))
 
     lastStagedZone = zone
     return true
 end
 genv.LoopXCode_StageToZone = stageToZone
-
--- Jalan cepat menuju posisi tetap (dipakai Safe untuk balik ke safe zone).
-local function walkTowardsFast(rootPart, dest, stopDist, timeout)
-    local char = rootPart.Parent
-    local oldSpeed = getWalkSpeed(char)
-    setWalkSpeed(char, FAST_WALK_SPEED)
-    local started = os.clock()
-    while os.clock() - started < (timeout or 6) do
-        recoverFromBoss(rootPart)
-        local cur = rootPart.Position
-        local delta = Vector3.new(dest.X - cur.X, 0, dest.Z - cur.Z)
-        if delta.Magnitude <= (stopDist or 3) then break end
-        -- Nggak ada snap besar: server nolak lompatan jauh dan bikin glitch.
-        -- Tetap jalan 6 stud/langkah sampai tujuan.
-        local step = math.min(delta.Magnitude, 6)
-        pcall(function()
-            rootPart.CFrame = CFrame.new(
-                Vector3.new(cur.X + delta.Unit.X * step, cur.Y, cur.Z + delta.Unit.Z * step))
-        end)
-        task.wait(Pace.Walk)
-    end
-    setWalkSpeed(char, oldSpeed)
-    return (Vector3.new(rootPart.Position.X - dest.X, 0, rootPart.Position.Z - dest.Z).Magnitude
-        <= (stopDist or 3))
-end
 
 local function approachTarget(rootPart, targetInfo, maxSteps, stopDist)
     -- Filter (tier + zone + income) diputuskan dari DATA dulu. Begitu target ketemu,
@@ -1015,18 +1051,17 @@ end
 local isCarrying = function() return false end
 local escapeToSafeZone = function() return false end
 
-local function reelDuration()
-    -- Fast sekarang jauh lebih kenceng dari Safe (4s). Masih di atas batas
-    -- CaptureConfig.ReelMinTime (~0.76s), jadi server tetap nerima reel penuh.
+local function reelDuration(difficulty)
+    -- Durasi dari system lama yang sudah tested: Fast 1.05s, Safe 4s.
+    -- Fast di atas ReelMinTime (~0.76s), jadi server tetap nerima reel penuh.
     if isFastReel() then return 1.05 end
-    -- Safe: reel cepat juga (dulu ~24s), sekarang cukup 4 detik.
     return 4
 end
 
-local function reelCapture(session, targetInfo)
+local function reelCapture(session, targetInfo, difficulty)
     local char = LocalPlayer.Character
     local rootPart = char and char:FindFirstChild("HumanoidRootPart")
-    local duration = reelDuration()
+    local duration = reelDuration(difficulty)
     local weak = lassoTooWeak(targetInfo)
     local started = os.clock()
     local lastFire = 0
@@ -1069,22 +1104,16 @@ local function reelCapture(session, targetInfo)
     end
 
     if active then
-        -- Kirim progress penuh dua kali dengan jeda kecil. Reel "nempel di
-        -- phone" biasanya terjadi karena server belum menerima pull terakhir
-        -- sebelum FinishCapture diproses.
         pcall(function() R_STEAL.CapturePull:FireServer(session, 1) end)
-        task.wait(isFastReel() and 0.06 or 0.12)
-        pcall(function() R_STEAL.CapturePull:FireServer(session, 1) end)
-        task.wait(isFastReel() and 0.06 or 0.12)
+        task.wait(0.05)
         pcall(function() R_STEAL.FinishCapture:FireServer(session, true, false) end)
-
-        -- Fast harus langsung keluar dari map begitu pet benar-benar di tangan.
-        -- Tunggu sinkronisasi Carrying sebentar, lalu heading ke safe zone.
-        for _ = 1, (isFastReel() and 12 or 8) do
+        -- Carrying attribute server datang SESUDAH FinishCapture. Tunggu
+        -- sebentar di sini supaya tryCaptureOnce nggak salah hitung "Failed"
+        -- padahal pet sudah benar-benar kepegang.
+        for _ = 1, 20 do
             if isCarrying() then break end
             task.wait(0.05)
         end
-        if isCarrying() then task.spawn(escapeToSafeZone) end
     else
         -- Auto Catch dimatikan di tengah reel: batalkan, jangan tinggalkan
         -- Capturing=true di server (nanti StartCapture selalu ditolak).
@@ -1148,6 +1177,9 @@ local function doEscapeToSafeZone()
     if not inSafeZone(rootPart.Position) then
         -- Jalan cepat ke depan safe zone dulu (Z -10), lalu masuk ke Z 10.
         -- Pet ngikutin char lewat lasso/server, jadi posisinya ikut valid.
+        -- System lama: kecepatan escape ditetapkan tinggi (220/140/220),
+        -- bukan WalkSpeed biasa. WalkSpeed dipakai buat jalan ke zone/target;
+        -- pulang bawa pet harus cepat kalau nggak pet ke-drop guardian.
         rushToPoint(rootPart, function()
             return Vector3.new(SAFE_FRONT.X, rootPart.Position.Y, SAFE_FRONT.Z)
         end, 6, 90, 220)
@@ -1180,6 +1212,21 @@ escapeToSafeZone = function()
     escapeRunning = false
     return ok
 end
+
+-- Pindah ke zone berikutnya untuk memicu streaming WildPets. Sekali per siklus,
+-- jadi nggak nge-freeze. Pet tetap ke-ride (cuma rootPart yang digeser).
+local function roamToNextZone(rootPart)
+    if not rootPart or #SCAN_ZONES == 0 then return end
+    local dest = SCAN_ZONES[scanIndex]
+    scanIndex = scanIndex % #SCAN_ZONES + 1
+    if not dest then return end
+    recoverFromBoss(rootPart)
+    pcall(function()
+        rootPart.CFrame = CFrame.new(Vector3.new(dest.X, dest.Y, dest.Z))
+    end)
+    task.wait(0.6) -- kasih waktu client stream-in pet di zone itu
+end
+genv.LoopXCode_RoamZone = roamToNextZone
 
 local function bagCount()
     -- Baca atribut player (GRATIS), jangan InvokeServer "list" tiap siklus (bikin ngeframe).
@@ -1231,16 +1278,25 @@ local function tryCaptureOnce(rootPart, target)
     -- FAST: settle minimal supaya server menerima posisi hasil nudge.
     if isFastReel() then task.wait(Pace.FastSettle) else task.wait(Pace.Settle) end
 
-    local okStart, startResult = pcall(function()
-        return R_STEAL.StartCapture:InvokeServer(target.id)
-    end)
-    if not (okStart and type(startResult) == "table" and startResult.session) then
+    -- Game bisa mengganti Lasso dengan Tool pet saat kamera/stream berubah.
+    -- Pastikan Lasso benar-benar dipegang tepat sebelum StartCapture.
+    if not ensureLasso() then
         bumpStealStat("Failed")
         refreshStealStats()
         return false
     end
 
-    local active = reelCapture(startResult.session, target)
+    local okStart, startResult = pcall(function()
+        return R_STEAL.StartCapture:InvokeServer(target.id)
+    end)
+    if not (okStart and type(startResult) == "table" and startResult.session
+        and startResult.ok ~= false) then
+        bumpStealStat("Failed")
+        refreshStealStats()
+        return false
+    end
+
+    local active = reelCapture(startResult.session, target, startResult.difficulty)
     if not active then return false end
     task.wait(isFastReel() and 0.08 or 0.25)
     if not isCarrying() then
@@ -1252,18 +1308,23 @@ local function tryCaptureOnce(rootPart, target)
     return true
 end
 
--- Satu siklus penuh. Kalau capture gagal, TETAP di map dan ulangi sampai
--- dapet. Nggak pernah jalan balik ke safe zone sebelum pet benar-benar kepegang.
+-- Satu siklus penuh. System lama: sekali ON, terus cari/capture di zone.
+-- Gagal = lanjut cari target lain (nggak balik safe, nggak nunggu lama).
+-- Sukses = pet masih di tangan, lanjut cari lagi sampai bag full / di-off.
+-- Safe zone HANYA dipakai kalau ada carry sisa dari sesi sebelumnya.
 local function stealStep()
-    if isCarrying() then escapeToSafeZone() end
+    -- Carry sisa (misal dari ReelMode/Fast yang keputus) dibersihkan dulu.
+    if isCarrying() then
+        escapeToSafeZone()
+        return true
+    end
+
     -- Capturing adalah attribute server. Kalau masih true (sisa sesi yang
-    -- keputus/escape), StartCapture pasti ditolak. Tunggu, lalu paksa cancel
-    -- kalau-server nyangkut supaya siklus berikutnya tetap bisa jalan.
-    for i = 1, 40 do
+    -- keputus), StartCapture pasti ditolak. Tunggu sebentar, paksa cancel.
+    for i = 1, 20 do
         if LocalPlayer:GetAttribute("Capturing") ~= true then break end
-        if isCarrying() then escapeToSafeZone() end
-        if i == 20 then cancelCapture(nil) end
-        task.wait(0.1)
+        if i == 10 then cancelCapture(nil) end
+        task.wait(0.05)
     end
     if LocalPlayer:GetAttribute("Capturing") == true then return false end
     if not ensureLasso() then return false end
@@ -1276,40 +1337,42 @@ local function stealStep()
     -- baru cari pet di situ. "Any" = diam di tempat, cari dari data yang ada.
     stageToZone(rootPart)
 
-    local before = bagCount()
-    local got = false
     while StealCfg.Enabled do
         local target = pickTarget()
         updateStealInfo(target)
         if not target then
-            -- Nggak ada pet yang lolos filter -> berhenti, nggak nyuri pet lain.
+            -- Nggak ada pet yang lolos filter -> diam di zone, jangan kabur.
             setStatus("any detect", "waiting for filtered pet")
             return false
         end
         setStatus("any detect", tostring(target.name or "?"))
 
-        if tryCaptureOnce(rootPart, target) then
-            got = true
-            break
+        local ok = tryCaptureOnce(rootPart, target)
+
+        -- Kasih server waktu bersihin Capturing. Kalaupun nyangkut, jangan
+        -- nunggu 4 detik: cancel cepat lalu lanjut target berikutnya.
+        if LocalPlayer:GetAttribute("Capturing") == true then
+            task.wait(0.15)
+            if LocalPlayer:GetAttribute("Capturing") == true then cancelCapture(nil) end
         end
 
-        -- Gagal: jangan balik ke safe zone. Tunggu Capturing bersih (paksa
-        -- cancel kalau nyangkut), lalu coba lagi sampai filter benar-benar dapet.
-        for i = 1, 40 do
-            if LocalPlayer:GetAttribute("Capturing") ~= true then break end
-            if i == 20 then cancelCapture(nil) end
-            task.wait(0.1)
+        -- Setelah sukses tetap lanjut; setelah gagal juga tetap lanjut.
+        -- Tidak ada escapeToSafeZone di sini. Boss/dekat guardian diabaikan:
+        -- recoverFromBoss sudah jalan di rushToPoint/reelCapture.
+        if ok then
+            task.wait(isFastReel() and 0.08 or 0.15)
+        else
+            task.wait(isFastReel() and 0.08 or 0.12)
+        end
+        if isCarrying() then
+            -- Carry baru saja selesai = persist ke bag sekarang. Setelah itu
+            -- loop berikutnya mulai lagi dari zone yang sama.
+            escapeToSafeZone()
+            return true
         end
         if not StealCfg.Enabled then return false end
-        task.wait(StealCfg.RetryDelay)
     end
-
-    if not got or not isCarrying() then return false end
-    escapeToSafeZone()
-
-    local after = bagCount()
-    if before < 0 or after < 0 then return true end
-    return after > before
+    return false
 end
 
 local function stealLoop()
@@ -1322,7 +1385,9 @@ local function stealLoop()
             StealCfg.Busy = true
             pcall(stealStep)
             StealCfg.Busy = false
-            if StealCfg.Enabled then task.wait(StealCfg.RetryDelay) end
+            -- Jeda kecil antar siklus supaya game nggak freeze. Bukan RetryDelay
+            -- (0.7s) yang bikin Fast kerasa macet tiap selesai satu catch.
+            if StealCfg.Enabled then task.wait(isFastReel() and 0.08 or 0.15) end
         end
         StealCfg.Busy = false
         -- Loop selesai: lepas owner supaya toggle ON lagi bisa jalan.
@@ -2001,6 +2066,9 @@ setAntiAFK(genv.LoopXCode_HardenCfg.AntiAFK)
 
 local HardenHistory = {}
 genv.LoopXCode_HardenAlive = function()
+    return not STATE or type(STATE.alive) ~= "function" or STATE.alive()
+end
+genv.LoopXCode_HardenAlive = function()
     return HARDEN_EPOCH == genv.LoopXCode_HardenEpoch
         and (not STATE or type(STATE.alive) ~= "function" or STATE.alive())
 end
@@ -2009,7 +2077,7 @@ end
 -- Anti Hit: guardian target diubah ke id bukan milik LocalPlayer supaya
 -- guardian/poseidon tidak masuk mode wake dan tidak mengejar. Set_Shake juga
 -- dimatikan supaya efek hit dari server tidak mengguncang layar.
-genv.LoopXCode_AntiHitState = { shakeOriginal = nil, cache = {} }
+genv.LoopXCode_AntiHitState = { shakeOriginal = nil, cache = {}, hitConnections = nil }
 genv.LoopXCode_PacifyGuardian = function(model)
     if not model or not model.Parent then return end
     local mine = LocalPlayer.UserId
@@ -2050,6 +2118,37 @@ genv.LoopXCode_CollectGuardians = function()
     return found
 end
 
+-- GuardianHit dikirim server, jadi client nggak bisa mengubah keputusan chase.
+-- Yang BISA dilakukan: putuskan listener efek hit di client supaya char nggak
+-- di-launch/flash, lalu pasangkan kembali kalau Anti Hit dimatikan.
+local function suppressGuardianHit()
+    local state = genv.LoopXCode_AntiHitState
+    if state.hitConnections then return end
+    local remote = RemoteFolder and RemoteFolder:FindFirstChild("GuardianHit")
+    if not remote or type(getconnections) ~= "function" then return end
+    local saved = {}
+    pcall(function()
+        for _, c in ipairs(getconnections(remote.OnClientEvent)) do
+            local fn = c.Function
+            if type(fn) == "function" then
+                saved[#saved + 1] = { signal = remote.OnClientEvent, fn = fn, conn = c }
+                pcall(function() c:Disconnect() end)
+            end
+        end
+    end)
+    state.hitConnections = saved
+end
+
+local function restoreGuardianHit()
+    local state = genv.LoopXCode_AntiHitState
+    local saved = state.hitConnections
+    if not saved then return end
+    for _, e in ipairs(saved) do
+        pcall(function() e.signal:Connect(e.fn) end)
+    end
+    state.hitConnections = nil
+end
+
 task.spawn(function()
     local nextScan = 0
     while genv.LoopXCode_HardenAlive() do
@@ -2078,6 +2177,7 @@ end)
 
 OnCleanup(function()
     local state = genv.LoopXCode_AntiHitState
+    pcall(restoreGuardianHit)
     if state.shakeOriginal ~= nil then
         pcall(function() LocalPlayer:SetAttribute("Set_Shake", state.shakeOriginal) end)
     end
@@ -2528,10 +2628,14 @@ genv.LoopXCode_HardenToggle = function(key, v)
         genv.LoopXCode_HardenCfg.AntiHit = enabled
         if enabled then
             pcall(function() LocalPlayer:SetAttribute("Set_Shake", false) end)
+            pcall(suppressGuardianHit)
             for guardian in pairs(state.cache) do genv.LoopXCode_PacifyGuardian(guardian) end
-        elseif state.shakeOriginal ~= nil then
-            pcall(function() LocalPlayer:SetAttribute("Set_Shake", state.shakeOriginal) end)
-            state.shakeOriginal = nil
+        else
+            pcall(restoreGuardianHit)
+            if state.shakeOriginal ~= nil then
+                pcall(function() LocalPlayer:SetAttribute("Set_Shake", state.shakeOriginal) end)
+                state.shakeOriginal = nil
+            end
         end
         pcall(genv.LoopXCode_HardenSave)
         return
@@ -2859,7 +2963,8 @@ local function saveNamedConfig(name)
             Enabled = StealCfg.Enabled, RetryDelay = StealCfg.RetryDelay,
             Rarity = StealCfg.Rarity, Zone = StealCfg.Zone,
             CustomIncome = StealCfg.CustomIncome, Priority = StealCfg.Priority,
-            ReelMode = StealCfg.ReelMode, WeakAllowed = StealCfg.WeakAllowed
+            ReelMode = StealCfg.ReelMode, WeakAllowed = StealCfg.WeakAllowed,
+            WalkSpeed = StealCfg.WalkSpeed
         },
         SellCfg = {
             Enabled = SellCfg.Enabled, Interval = SellCfg.Interval,
@@ -2907,6 +3012,7 @@ local function loadNamedConfig(name)
         if s[key] ~= nil then StealCfg[key] = tostring(s[key]) end
     end
     if tonumber(s.RetryDelay) then StealCfg.RetryDelay = tonumber(s.RetryDelay) end
+    if tonumber(s.WalkSpeed) then StealCfg.WalkSpeed = math.max(16, math.min(400, tonumber(s.WalkSpeed))) end
     StealCfg.Enabled = s.Enabled == true
     StealCfg.WeakAllowed = s.WeakAllowed == true
     StealCfg.Busy = false
@@ -2950,7 +3056,6 @@ local function loadNamedConfig(name)
             end
         end
     end
-
     local hd = type(data.HardenCfg) == "table" and data.HardenCfg or {}
     for _, key in ipairs(genv.LoopXCode_HardenFeatureKeys) do
         if hd[key] ~= nil then
@@ -2962,17 +3067,16 @@ local function loadNamedConfig(name)
     for _, key in ipairs({ "SaveHistory", "SaveUI", "SaveMenu" }) do
         if hd[key] ~= nil then genv.LoopXCode_HardenCfg[key] = hd[key] == true end
     end
-
     if type(data.LangCfg) == "table" and data.LangCfg.Language then
         LangCfg.Language = (tostring(data.LangCfg.Language) == "Indonesia") and "Indonesia" or "English"
         setHandleValue(UIHandles["Language"], LangCfg.Language)
     end
-
     setHandleValue(UIHandles["Auto Catch"], StealCfg.Enabled)
     setHandleValue(UIHandles["Catch Reel"], StealCfg.ReelMode)
     setHandleValue(UIHandles["Catch Rarity (tier)"], StealCfg.Rarity)
     setHandleValue(UIHandles["Catch Zone"], StealCfg.Zone)
     setHandleValue(UIHandles["Min Income"], StealCfg.CustomIncome)
+    setHandleValue(UIHandles["Walk Speed"], tostring(StealCfg.WalkSpeed))
     setHandleValue(UIHandles["Weak Lasso Catch"], StealCfg.WeakAllowed)
     setHandleValue(UIHandles["Auto Equip Best Speed"], MiscCfg.AutoEquipBestSpeed)
     setHandleValue(UIHandles["Auto Sell Pet"], SellCfg.Enabled)
@@ -2993,7 +3097,6 @@ local function loadNamedConfig(name)
         { "Save History", genv.LoopXCode_HardenCfg.SaveHistory }, { "Save UI", genv.LoopXCode_HardenCfg.SaveUI },
         { "Save Menu", genv.LoopXCode_HardenCfg.SaveMenu }
     }) do setHandleValue(UIHandles[item[1]], item[2]) end
-
     pcall(function() genv.LoopXCode_ApplyAutoSteal(StealCfg.Enabled) end)
     pcall(function() genv.LoopXCode_ApplyHudLayout() end)
     pcall(function() genv.LoopXCode_ApplyLanguage() end)
@@ -3020,7 +3123,11 @@ local function buildWindUI()
     end
 
     local okLib, lib = pcall(function()
-        return loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
+        local src = winduiSource
+        if type(src) ~= "string" or src == "" then
+            src = game:HttpGet(WINDUI_URL, true)
+        end
+        return loadstring(src)()
     end)
 
     if not (okLib and type(lib) == "table" and type(lib.CreateWindow) == "function") then
@@ -3038,11 +3145,22 @@ local function buildWindUI()
         ToggleKey = Enum.KeyCode.RightShift,
         Transparent = true,
         Theme = "Dark",
+        ShadowTransparency = 1,
         Resizable = true,
         SideBarWidth = 170,
         HideSearchBar = true,
         ScrollBarEnabled = false
     })
+
+    -- WindUI Dark theme ngasih tiap toggle/dropdown/section bayangan kotak
+    -- hitam (LabelBackgroundTransparency = 0.83). Matikan dari theme-nya
+    -- supaya semua elemen bersih, bukan ditutup-tutupi satu per satu.
+    pcall(function()
+        local themes = lib.Themes
+        local dark = type(themes) == "table" and themes.Dark or nil
+        if type(dark) == "table" then dark.LabelBackgroundTransparency = 1 end
+        if type(lib.SetTheme) == "function" then lib:SetTheme("Dark") end
+    end)
 
     UIWindow.Visible = true
     UIWindow.Closed = false
@@ -3213,86 +3331,103 @@ local function buildWindUI()
     genv.LoopXCode_StyleAllDropdowns = styleAllDropdowns
 
     -- ---------- Menu wallpaper: gradient + pattern, NO external asset ----------
-    -- WindUI pakai ZIndexBehavior = Sibling, jadi urutan anak yang menentukan
-    -- mana yang dilukis di depan. Wallpaper dipasang SEBAGAI ANAK Background
-    -- (anak ke-3 dari frame window), bukan di frame utama: dengan begitu dia
-    -- tetap di belakang ImageLabel dekorasi dan Frame Main yang berisi menu.
+    -- Wallpaper dipasang langsung di Background milik WindUI supaya ikut
+    -- clip/tween window, termasuk saat fullscreen. Nggak pakai ScreenGui
+    -- terpisah lagi (versi lama bikin wallpaper keluar dari frame).
     local menuBgController = nil
     local function installMenuBackground(windowObj)
-        local main, host
-        pcall(function()
-            main = windowObj and windowObj.UIElements and windowObj.UIElements.Main
-        end)
-        if not main then return nil end
-        host = main:FindFirstChild("Background") or main
-
-        local cornerRadius = UDim.new(0, 16)
-        pcall(function()
-            local src = main:FindFirstChild("UICorner")
-            if src then cornerRadius = src.CornerRadius end
-        end)
-        local function addCorner(obj)
-            local c = Instance.new("UICorner")
-            c.CornerRadius = cornerRadius
-            c.Parent = obj
+        local windowMain = windowObj and windowObj.UIElements and windowObj.UIElements.Main or nil
+        if not windowMain then return nil end
+        local holder = windowMain:FindFirstChild("Background")
+        if not holder then
+            holder = Instance.new("Frame")
+            holder.Name = "Background"
+            holder.Size = UDim2.fromScale(1, 1)
+            holder.BackgroundTransparency = 1
+            holder.BorderSizePixel = 0
+            holder.ZIndex = 0
+            holder.Parent = windowMain
         end
 
-        local wall = Instance.new("Frame")
-        wall.Name = "LXC_MenuWallpaper"
-        wall.Size = UDim2.fromScale(1, 1)
-        wall.BorderSizePixel = 0
-        wall.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-        wall.BackgroundTransparency = 0
-        wall.Parent = host
-        addCorner(wall)
+        local old = holder:FindFirstChild("LXC_MenuBackground")
+        if old then pcall(function() old:Destroy() end) end
 
-        local grad = Instance.new("UIGradient")
-        grad.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, Color3.fromRGB(14, 22, 42)),
-            ColorSequenceKeypoint.new(0.5, Color3.fromRGB(24, 16, 40)),
-            ColorSequenceKeypoint.new(1, Color3.fromRGB(8, 10, 16))
+        local frame = Instance.new("Frame")
+        frame.Name = "LXC_MenuBackground"
+        frame.Size = UDim2.fromScale(1, 1)
+        frame.BorderSizePixel = 0
+        -- Frame induk harus benar-benar transparan. Kalau ada warna + corner
+        -- di sini, wallpaper kelihatan seperti kotak panel di dalam menu.
+        frame.BackgroundTransparency = 1
+        frame.ClipsDescendants = false
+        frame.ZIndex = 0
+        frame.Parent = holder
+
+        local function fullLayer(name, color, z)
+            local f = Instance.new("Frame")
+            f.Name = name
+            f.Size = UDim2.fromScale(1, 1)
+            f.BorderSizePixel = 0
+            f.BackgroundColor3 = color
+            f.ZIndex = z or 0
+            f.Parent = frame
+            return f
+        end
+
+        -- Layer 1: gradient utama. Rotasi/dark-stop dibuang supaya nggak
+        -- bikin bayangan di sudut kiri/kanan/bawah. Warna merata lembut.
+        local base = fullLayer("Gradient", Color3.fromRGB(255, 255, 255), 0)
+        local baseGrad = Instance.new("UIGradient")
+        baseGrad.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(16, 24, 46)),
+            ColorSequenceKeypoint.new(0.5, Color3.fromRGB(22, 18, 42)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(16, 22, 40))
         })
-        grad.Rotation = 30
-        grad.Parent = wall
+        baseGrad.Rotation = 0
+        baseGrad.Parent = base
+        base.BackgroundTransparency = 0.28
 
-        -- Satu layer pattern halus saja. Cukup buat kesan tekstur, nggak
-        -- bikin menu ribet atau nambah kerja tiap frame.
-        local pattern = Instance.new("Frame")
-        pattern.Name = "Texture"
-        pattern.Size = UDim2.fromScale(1, 1)
-        pattern.BorderSizePixel = 0
-        pattern.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-        pattern.Parent = wall
-        addCorner(pattern)
-        local pts = {}
-        for i = 0, 3 do
-            pts[#pts + 1] = NumberSequenceKeypoint.new(i / 3, (i % 2 == 0) and 0.965 or 1)
+        -- Layer 2: pattern garis diagonal + vertikal (faint, murah).
+        local function addStripes(name, rotation, segments, opacity, z)
+            local f = fullLayer(name, Color3.fromRGB(255, 255, 255), z)
+            local pts = {}
+            for i = 0, segments do
+                local faint = (i % 2 == 0) and (1 - opacity) or 1
+                pts[#pts + 1] = NumberSequenceKeypoint.new(i / segments, faint)
+            end
+            local g = Instance.new("UIGradient")
+            g.Rotation = rotation
+            g.Transparency = NumberSequence.new(pts)
+            g.Parent = f
         end
-        local pgrad = Instance.new("UIGradient")
-        pgrad.Rotation = 45
-        pgrad.Transparency = NumberSequence.new(pts)
-        pgrad.Parent = pattern
+        addStripes("PatternDiagonal", 45, 4, 0.045, 1)
+        addStripes("PatternVertical", 0, 4, 0.025, 1)
 
         local controller = { Enabled = true, Busy = false }
-        local function syncPattern()
-            pattern.Visible = controller.Enabled and not controller.Busy
+        local alive = true
+
+        local function sync()
+            if not alive then return end
+            frame.Visible = controller.Enabled and not controller.Busy
         end
+
         function controller:SetEnabled(value)
             controller.Enabled = value == true
-            wall.Visible = controller.Enabled
-            syncPattern()
+            sync()
         end
-        -- Fullscreen window di-tween 0.45 detik. Pattern UIGradient bikin
-        -- Roblox hitung ulang tekstur tiap frame, jadi dimatikan dulu selama
-        -- animasi dan dinyalain lagi setelah ukuran diam.
+
         function controller:SetBusy(value)
             controller.Busy = value == true
-            syncPattern()
+            sync()
         end
+
         function controller:Destroy()
-            pcall(function() wall:Destroy() end)
+            alive = false
+            pcall(function() frame:Destroy() end)
         end
+
         OnCleanup(function() controller:Destroy() end)
+        sync()
         return controller
     end
 
@@ -3329,6 +3464,18 @@ local function buildWindUI()
     -- Search semua fitur: menyembunyikan element menu yang tidak cocok.
     -- WindUI search bawaan cuma menyaring tab, jadi ini yang dipakai.
     local featureSearchText = ""
+    local SEARCH_SECTIONS = {}
+    local function trackSection(title, section)
+        if section then SEARCH_SECTIONS[#SEARCH_SECTIONS + 1] = { Title = title, Handle = section } end
+        return section
+    end
+    local function featureHay(title, name)
+        local realName = tostring(name or ""):gsub("^Harden:", "")
+        local cleanTitle = tostring(title or realName)
+        return string.lower(cleanTitle .. " " .. realName .. " "
+            .. tostring(translateKey(realName, "Indonesia")) .. " "
+            .. tostring(translateKey(cleanTitle, "Indonesia")))
+    end
     local function applyFeatureSearch()
         local q = string.lower(featureSearchText or "")
         for name, handle in pairs(UIHandles) do
@@ -3338,16 +3485,39 @@ local function buildWindUI()
                 pcall(function() frame = handle and handle.ElementFrame end)
                 if typeof(frame) == "Instance" then
                     local title = tostring((type(handle) == "table" and handle.Title) or realName)
-                    local hay = string.lower(title .. " " .. tostring(realName)
-                        .. " " .. tostring(translateKey(realName, "Indonesia")))
+                    local hay = featureHay(title, realName)
                     pcall(function() frame.Visible = (q == "" or hay:find(q, 1, true) ~= nil) end)
                 end
+            end
+        end
+        -- Section header ikut tersaring. Kalau section nggak punya teks yang
+        -- cocok, seluruh section disembunyikan biar hasil search kelihatan bersih.
+        for _, entry in ipairs(SEARCH_SECTIONS) do
+            local frame = nil
+            pcall(function() frame = entry.Handle and entry.Handle.ElementFrame end)
+            if typeof(frame) == "Instance" then
+                local show = (q == "" or entry.Title == "Search Features")
+                if not show and q ~= "" then
+                    if featureHay(entry.Title, entry.Title):find(q, 1, true) then
+                        show = true
+                    else
+                        pcall(function()
+                            for _, o in ipairs(frame:GetDescendants()) do
+                                if o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox") then
+                                    local t = string.lower(tostring(o.Text or ""))
+                                    if t ~= "" and t:find(q, 1, true) then show = true break end
+                                end
+                            end
+                        end)
+                    end
+                end
+                pcall(function() frame.Visible = show end)
             end
         end
     end
     genv.LoopXCode_ApplyFeatureSearch = applyFeatureSearch
 
-    local SearchSection = Tab:Section({ Title = "Search Features", Opened = true })
+    local SearchSection = trackSection("Search Features", Tab:Section({ Title = "Search Features", Opened = true }))
     SearchSection:Input({
         Title = "Search Features",
         Value = "",
@@ -3373,7 +3543,7 @@ local function buildWindUI()
         end
     end)
 
-    local TargetSection = Tab:Section({ Title = "Target", Opened = true })
+    local TargetSection = trackSection("Target", Tab:Section({ Title = "Target", Opened = true }))
     local TargetParagraph = TargetSection:Paragraph({ Title = "Current Target", Desc = "Target: none" })
     local StatusParagraph = TargetSection:Paragraph({ Title = "Activity", Desc = RuntimeStatus.Text })
     local StatsParagraph = TargetSection:Paragraph({
@@ -3403,7 +3573,7 @@ local function buildWindUI()
     end
     setStatus(RuntimeStatus.Mode, RuntimeStatus.Detail)
 
-    local StealStatusSection = Tab:Section({ Title = "Status Steal", Opened = true })
+    local StealStatusSection = trackSection("Status Steal", Tab:Section({ Title = "Status Steal", Opened = true }))
     local StealStatusParagraph = StealStatusSection:Paragraph({
         Title = "Steal Progress", Desc = stealStatsPanel()
     })
@@ -3432,7 +3602,7 @@ local function buildWindUI()
     end)
 
     local HudSection = Tab:Section({ Title = "HUD Size", Opened = true })
-    local hudWidthInput = HudSection:Input({
+    HudSection:Input({
         Title = "HUD Width",
         Value = tostring(HudCfg.Width),
         Placeholder = "720",
@@ -3441,8 +3611,7 @@ local function buildWindUI()
             pcall(function() genv.LoopXCode_ApplyHudLayout() end)
         end
     })
-    UIHandles["HUD Width"] = hudWidthInput
-    local hudHeightInput = HudSection:Input({
+    HudSection:Input({
         Title = "HUD Height",
         Value = tostring(HudCfg.Height),
         Placeholder = "108",
@@ -3451,8 +3620,7 @@ local function buildWindUI()
             pcall(function() genv.LoopXCode_ApplyHudLayout() end)
         end
     })
-    UIHandles["HUD Height"] = hudHeightInput
-    local hudTextSizeInput = HudSection:Input({
+    HudSection:Input({
         Title = "HUD Text Size",
         Value = tostring(HudCfg.TextSize),
         Placeholder = "18",
@@ -3461,8 +3629,7 @@ local function buildWindUI()
             pcall(function() genv.LoopXCode_ApplyHudLayout() end)
         end
     })
-    UIHandles["HUD Text Size"] = hudTextSizeInput
-    local hudGapInput = HudSection:Input({
+    HudSection:Input({
         Title = "HUD Gap",
         Value = tostring(HudCfg.Gap),
         Placeholder = "10",
@@ -3471,8 +3638,7 @@ local function buildWindUI()
             pcall(function() genv.LoopXCode_ApplyHudLayout() end)
         end
     })
-    UIHandles["HUD Gap"] = hudGapInput
-    local hudShadowInput = HudSection:Input({
+    HudSection:Input({
         Title = "HUD Shadow",
         Value = tostring(HudCfg.Shadow),
         Placeholder = "0.55  (0 = off, 1 = solid)",
@@ -3481,8 +3647,7 @@ local function buildWindUI()
             pcall(function() genv.LoopXCode_ApplyHudLayout() end)
         end
     })
-    UIHandles["HUD Shadow"] = hudShadowInput
-    local hudShadowOffsetInput = HudSection:Input({
+    HudSection:Input({
         Title = "HUD Shadow Offset",
         Value = tostring(HudCfg.ShadowOffset),
         Placeholder = "2",
@@ -3491,7 +3656,6 @@ local function buildWindUI()
             pcall(function() genv.LoopXCode_ApplyHudLayout() end)
         end
     })
-    UIHandles["HUD Shadow Offset"] = hudShadowOffsetInput
     local hudFontDropdown = HudSection:Dropdown({
         Title = "HUD Font",
         Values = FONT_CHOICES,
@@ -3513,7 +3677,81 @@ local function buildWindUI()
     })
     UIHandles["Logo Font"] = logoFontDropdown
 
-    local CaptureSection = Tab:Section({ Title = "Capture", Opened = true })
+    local HudSection = Tab:Section({ Title = "HUD Size", Opened = true })
+    HudSection:Input({
+        Title = "HUD Width",
+        Value = tostring(HudCfg.Width),
+        Placeholder = "720",
+        Callback = function(v)
+            HudCfg.Width = tonumber(v) or HudCfg.Width
+            pcall(function() genv.LoopXCode_ApplyHudLayout() end)
+        end
+    })
+    HudSection:Input({
+        Title = "HUD Height",
+        Value = tostring(HudCfg.Height),
+        Placeholder = "108",
+        Callback = function(v)
+            HudCfg.Height = tonumber(v) or HudCfg.Height
+            pcall(function() genv.LoopXCode_ApplyHudLayout() end)
+        end
+    })
+    HudSection:Input({
+        Title = "HUD Text Size",
+        Value = tostring(HudCfg.TextSize),
+        Placeholder = "18",
+        Callback = function(v)
+            HudCfg.TextSize = tonumber(v) or HudCfg.TextSize
+            pcall(function() genv.LoopXCode_ApplyHudLayout() end)
+        end
+    })
+    HudSection:Input({
+        Title = "HUD Gap",
+        Value = tostring(HudCfg.Gap),
+        Placeholder = "10",
+        Callback = function(v)
+            HudCfg.Gap = tonumber(v) or HudCfg.Gap
+            pcall(function() genv.LoopXCode_ApplyHudLayout() end)
+        end
+    })
+    HudSection:Input({
+        Title = "HUD Shadow",
+        Value = tostring(HudCfg.Shadow),
+        Placeholder = "0.55  (0 = off, 1 = solid)",
+        Callback = function(v)
+            HudCfg.Shadow = tonumber(v) or HudCfg.Shadow
+            pcall(function() genv.LoopXCode_ApplyHudLayout() end)
+        end
+    })
+    HudSection:Input({
+        Title = "HUD Shadow Offset",
+        Value = tostring(HudCfg.ShadowOffset),
+        Placeholder = "2",
+        Callback = function(v)
+            HudCfg.ShadowOffset = tonumber(v) or HudCfg.ShadowOffset
+            pcall(function() genv.LoopXCode_ApplyHudLayout() end)
+        end
+    })
+    HudSection:Dropdown({
+        Title = "HUD Font",
+        Values = FONT_CHOICES,
+        Value = tostring(HudCfg.Font or "Mono"),
+        Callback = function(v)
+            HudCfg.Font = tostring(v or "Mono")
+            pcall(function() genv.LoopXCode_ApplyHudLayout() end)
+        end
+    })
+    HudSection:Dropdown({
+        Title = "Logo Font",
+        Values = FONT_CHOICES,
+        Value = tostring(HudCfg.LogoFont or "Display"),
+        Callback = function(v)
+            HudCfg.LogoFont = tostring(v or "Display")
+            pcall(function() genv.LoopXCode_ApplyHudLayout() end)
+        end
+    })
+
+    local CaptureSection = trackSection("Capture", Tab:Section({ Title = "Capture", Opened = true }))
     local autoCatchToggle = CaptureSection:Toggle({
         Title = "Auto Catch",
         Desc = "Approach, lasso, reel, and secure the pet",
@@ -3553,6 +3791,19 @@ local function buildWindUI()
         Callback = function(v) StealCfg.CustomIncome = tostring(v or "") end
     })
     UIHandles["Min Income"] = incomeInput
+    local walkSpeedInput = CaptureSection:Input({
+        Title = "Walk Speed",
+        Value = tostring(StealCfg.WalkSpeed),
+        Placeholder = "400",
+        Desc = "Walk speed used by Auto Catch in studs/sec (16-400)",
+        Callback = function(v)
+            local n = tonumber(v)
+            if not n then n = configuredWalkSpeed(400) end
+            n = math.max(16, math.min(400, n))
+            StealCfg.WalkSpeed = n
+        end
+    })
+    UIHandles["Walk Speed"] = walkSpeedInput
     -- WindUI Input cuma fire callback pas Enter/FocusLost. Pasang listener langsung
     -- di TextBox supaya filter ngefek seketika pas daddy ngetik.
     pcall(function()
@@ -3566,6 +3817,31 @@ local function buildWindUI()
         if box then
             box:GetPropertyChangedSignal("Text"):Connect(function()
                 StealCfg.CustomIncome = tostring(box.Text or "")
+            end)
+        end
+        local speedBox = nil
+        for _, o in ipairs(gethui():GetDescendants()) do
+            if o:IsA("TextBox") and (tostring(o.PlaceholderText) == "400" or tostring(o.Text) == tostring(StealCfg.WalkSpeed)) then
+                local okTitle, title = pcall(function()
+                    local p = o.Parent
+                    for _ = 1, 6 do
+                        if not p then break end
+                        for _, t in ipairs(p:GetChildren()) do
+                            if t:IsA("TextLabel") and tostring(t.Text):find("Walk Speed", 1, true) then return true end
+                        end
+                        p = p.Parent
+                    end
+                    return false
+                end)
+                if okTitle and title then speedBox = o break end
+            end
+        end
+        if speedBox then
+            speedBox:GetPropertyChangedSignal("Text"):Connect(function()
+                local n = tonumber(speedBox.Text)
+                if not n then return end
+                n = math.max(16, math.min(400, n))
+                StealCfg.WalkSpeed = n
             end)
         end
     end)
@@ -3608,7 +3884,7 @@ local function buildWindUI()
     task.spawn(equipBestSpeed)
 
     -- ---------- Experimen: paksa tangkap walau lasso lemah ----------
-    local ExperimentSection = Tab:Section({ Title = "Experimen", Opened = true })
+    local ExperimentSection = trackSection("Experimen", Tab:Section({ Title = "Experimen", Opened = true }))
     local weakCatchToggle = ExperimentSection:Toggle({
         Title = "Weak Lasso Catch",
         Desc = "Catch weak-lasso pets; still walks back to the safe zone",
@@ -3618,7 +3894,7 @@ local function buildWindUI()
     UIHandles["Weak Lasso Catch"] = weakCatchToggle
 
     -- ---------- Auto Sell Pet ----------
-    local SellSection = Tab:Section({ Title = "Auto Sell", Opened = true })
+    local SellSection = trackSection("Auto Sell", Tab:Section({ Title = "Auto Sell", Opened = true }))
     local autoSellToggle = SellSection:Toggle({
         Title = "Auto Sell Pet",
         Desc = "Sell every selected rarity automatically",
@@ -3660,7 +3936,7 @@ local function buildWindUI()
     -- ---------- Tab: Finder Pet ----------
     -- Menampilkan semua pet dari game: nama, income, rarity/tier, biome (dimap mana), dan gambar pet.
     local FinderTab = UIWindow:Tab({ Title = "Finder", Icon = "search" })
-    local FinderSection = FinderTab:Section({ Title = "Pet Finder", Opened = true })
+    local FinderSection = trackSection("Pet Finder", FinderTab:Section({ Title = "Pet Finder", Opened = true }))
 
     local FinderState = { Query = "", Biome = "All", Limit = math.huge }
     genv.LoopXCode_FinderState = FinderState
@@ -3775,10 +4051,10 @@ local function buildWindUI()
     -- ---------- Tab: Settings ----------
     local SettingsTab = UIWindow:Tab({ Title = "Settings", Icon = "settings-2" })
     local Sections = {
-        Features = SettingsTab:Section({ Title = "Features", Opened = true }),
-        ESP = SettingsTab:Section({ Title = "ESP", Opened = true }),
-        ESPStyle = SettingsTab:Section({ Title = "ESP Style", Opened = true }),
-        Misc = SettingsTab:Section({ Title = "Misc", Opened = true })
+        Features = trackSection("Features", SettingsTab:Section({ Title = "Features", Opened = true })),
+        ESP = trackSection("ESP", SettingsTab:Section({ Title = "ESP", Opened = true })),
+        ESPStyle = trackSection("ESP Style", SettingsTab:Section({ Title = "ESP Style", Opened = true })),
+        Misc = trackSection("Misc", SettingsTab:Section({ Title = "Misc", Opened = true }))
     }
     Sections.Misc:Button({
         Title = "Apply Safe Fonts",
@@ -3956,7 +4232,15 @@ local function buildWindUI()
         local top = math.clamp(pos.Y.Offset + pos.Y.Scale * sy, 0, math.max(0, sy - h))
         HudCfg.X = left - sx / 2 + w / 2
         HudCfg.Y = top - gap
-        return UDim2.new(0.5, left - sx / 2, 0, top)
+        local finalPos = UDim2.new(0.5, left - sx / 2, 0, top)
+        -- Shadow ikut HUD saat drag, bukan cuma saat applyHudLayout dipanggil.
+        if HudShadow then
+            local so = math.clamp(math.floor(tonumber(HudCfg.ShadowOffset) or 2), 0, 12)
+            pcall(function()
+                HudShadow.Position = UDim2.new(finalPos.X.Scale, finalPos.X.Offset + so, finalPos.Y.Scale, finalPos.Y.Offset + so)
+            end)
+        end
+        return finalPos
     end
 
     applyHudLayout = function()
