@@ -539,15 +539,19 @@ pcall(function() THC = require(ModuleFolder:WaitForChild("TurkeyHuntConfig")) en
 local Notify = nil
 pcall(function() Notify = require(ModuleFolder:WaitForChild("Notify")) end)
 local function hubNotify(text, kind)
+    if genv.LoopXCode_SuppressNotify then return end
     kind = kind or "Info"
+    text = tostring(text)
     pcall(function()
         if type(Notify) ~= "table" then return end
-        if kind == "Success" and type(Notify.Success) == "function" then
-            Notify.Success(text)
-        elseif kind == "Error" and type(Notify.Error) == "function" then
-            Notify.Error(text)
+        local fn = (kind == "Success" and Notify.Success)
+            or (kind == "Error" and Notify.Error)
+            or (kind == "Info" and Notify.Info)
+            or nil
+        if type(fn) == "function" then
+            fn(text)
         elseif type(Notify.Show) == "function" then
-            Notify.Show(text, kind, true)
+            Notify.Show(text, kind)
         end
     end)
 end
@@ -1882,6 +1886,23 @@ genv.LoopXCode_ApplyAutoSteal = function() end
 
 local R_MOUNT = RemoteFolder:FindFirstChild("Mount")
 
+-- Saat Auto Catch menyala, kecepatan mount perlu lebih tinggi dari guardian
+-- fastest (Shadow Realm 260) setelah catch-up 1.3x (~338). Carry slow ~0.85,
+-- jadi target mount-nya ~1.7x natural supaya tetap menang walau bawa pet.
+local MOUNT_CATCH_MULT = 1.7
+local MOUNT_CATCH_CAP = 480
+local function mountedSpeedTarget()
+    local natural = tonumber(genv.LoopXCode_BestMountSpeed) or 0
+    if natural <= 0 then return 0 end
+    if not (StealCfg.Enabled and mountedNow()) then return natural end
+    local boosted = natural * MOUNT_CATCH_MULT
+    if boosted > MOUNT_CATCH_CAP then boosted = MOUNT_CATCH_CAP end
+    if boosted < natural then boosted = natural end
+    return boosted
+end
+genv.LoopXCode_MountedSpeedTarget = mountedSpeedTarget
+genv.LoopXCode_MountCatchMultiplier = MOUNT_CATCH_MULT
+
 -- Auto Equip Best Speed: samakan persis alur tombol "Ride" manual game:
 --   1) equipmount(id)  -> nandain MountPet (hewan disiapin)
 --   2) Mount(id, true) -> hewan BENERAN dipakai (Mount / MountId keisi)
@@ -1927,6 +1948,7 @@ local function equipBestSpeed()
     for _, pet in ipairs(list.bag or {}) do consider(pet) end
     if not best then return end
     genv.LoopXCode_BestMountSpeed = bestSpeed
+    local targetSpeed = mountedSpeedTarget()
 
     local currentId = LocalPlayer:GetAttribute("MountId")
     if currentId == best.id and (LocalPlayer:GetAttribute("Mount") or "") ~= "" then
@@ -1934,7 +1956,7 @@ local function equipBestSpeed()
         -- SpeedBoost jalan kaki. Paksa ke kecepatan pet sekarang juga.
         pcall(function()
             local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-            if hum then hum.WalkSpeed = bestSpeed end
+            if hum then hum.WalkSpeed = targetSpeed end
         end)
         return
     end
@@ -1952,7 +1974,7 @@ local function equipBestSpeed()
     end
     pcall(function()
         local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-        if hum then hum.WalkSpeed = bestSpeed end
+        if hum then hum.WalkSpeed = targetSpeed end
     end)
 end
 genv.LoopXCode_EquipBestSpeed = equipBestSpeed
@@ -1962,7 +1984,7 @@ genv.LoopXCode_EquipBestSpeed = equipBestSpeed
 local function ensureMountedSpeed()
     if not mountedNow() then return false end
     local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-    local target = tonumber(genv.LoopXCode_BestMountSpeed) or 0
+    local target = mountedSpeedTarget()
     if hum and target > 0 then
         pcall(function()
             if math.abs(hum.WalkSpeed - target) > 0.5 then hum.WalkSpeed = target end
@@ -2720,10 +2742,17 @@ end
 -- Anti Hit: guardian target diubah ke id bukan milik LocalPlayer supaya
 -- guardian/poseidon tidak masuk mode wake dan tidak mengejar. Set_Shake juga
 -- dimatikan supaya efek hit dari server tidak mengguncang layar.
+-- Pulihkan dulu visual guardian dari run sebelumnya sebelum state baru dibuat.
+pcall(function()
+    if type(genv.LoopXCode_ReleaseGuardians) == "function" then
+        genv.LoopXCode_ReleaseGuardians()
+    end
+end)
 genv.LoopXCode_AntiHitState = {
     shakeOriginal = nil, cache = {}, hitConnections = nil, alerts = {},
     changeStateInstalled = false,
     guardianParts = {}, guardianHomes = {}, guardianAnchors = {},
+    guardianTransparency = {}, guardianBillboards = {},
 }
 genv.LoopXCode_AntiHitActive = false
 
@@ -2737,6 +2766,13 @@ local function cacheGuardianVisual(model)
                 parts[#parts + 1] = o
                 if state.guardianAnchors[o] == nil then
                     state.guardianAnchors[o] = o.Anchored
+                end
+                if state.guardianTransparency[o] == nil then
+                    state.guardianTransparency[o] = o.Transparency
+                end
+            elseif o:IsA("BillboardGui") or o:IsA("Highlight") then
+                if state.guardianBillboards[o] == nil then
+                    state.guardianBillboards[o] = o.Enabled
                 end
             end
         end
@@ -2756,6 +2792,12 @@ local function freezeGuardianVisual(model)
                 part.Anchored = true
                 part.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
                 part.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                part.Transparency = 1
+            end
+        end
+        for o in pairs(state.guardianBillboards) do
+            if o.Parent and (o:IsA("BillboardGui") or o:IsA("Highlight")) then
+                o.Enabled = false
             end
         end
         local home = state.guardianHomes[model]
@@ -2769,12 +2811,46 @@ local function releaseGuardianVisual()
         for part, anchored in pairs(state.guardianAnchors) do
             if part.Parent then part.Anchored = anchored end
         end
+        for part, transparency in pairs(state.guardianTransparency) do
+            if part.Parent then part.Transparency = transparency end
+        end
+        for o, enabled in pairs(state.guardianBillboards) do
+            if o.Parent then o.Enabled = enabled end
+        end
     end)
     state.guardianAnchors = {}
     state.guardianHomes = {}
     state.guardianParts = {}
+    state.guardianTransparency = {}
+    state.guardianBillboards = {}
 end
 genv.LoopXCode_ReleaseGuardians = releaseGuardianVisual
+
+-- Visual "sleep body" guardian disimpan game di Workspace.Camera.BossSleepBodies
+-- (copy model, nggak kena CollectionService Guardian). Ini yang masih kelihatan
+-- walau guardian aslinya sudah transparan. Sembunyikan juga, restore saat OFF.
+local function hideBossSleepBodies()
+    local cameraFolder = workspace:FindFirstChild("Camera")
+    local folder = cameraFolder and cameraFolder:FindFirstChild("BossSleepBodies")
+    if not folder then return end
+    local state = genv.LoopXCode_AntiHitState
+    pcall(function()
+        for _, o in ipairs(folder:GetDescendants()) do
+            if o:IsA("BasePart") then
+                if state.guardianTransparency[o] == nil then
+                    state.guardianTransparency[o] = o.Transparency
+                end
+                o.Transparency = 1
+            elseif o:IsA("BillboardGui") or o:IsA("Highlight") then
+                if state.guardianBillboards[o] == nil then
+                    state.guardianBillboards[o] = o.Enabled
+                end
+                o.Enabled = false
+            end
+        end
+    end)
+end
+genv.LoopXCode_HideBossSleepBodies = hideBossSleepBodies
 
 genv.LoopXCode_PacifyGuardian = function(model)
     if not model or not model.Parent then return end
@@ -2897,6 +2973,7 @@ task.spawn(function()
             if now >= nextScan then
                 nextScan = now + 0.65
                 state.cache = genv.LoopXCode_CollectGuardians()
+                pcall(function() genv.LoopXCode_HideBossSleepBodies() end)
                 pcall(function()
                     local pg = LocalPlayer:FindFirstChild("PlayerGui")
                     if not pg then return end
@@ -3640,6 +3717,7 @@ genv.LoopXCode_HardenToggle = function(key, v)
             pcall(function() LocalPlayer:SetAttribute("Set_Shake", false) end)
             pcall(function() installAntiHitStateHook(currentHumanoid()) end)
             pcall(suppressGuardianHit)
+            pcall(function() genv.LoopXCode_HideBossSleepBodies() end)
             for guardian in pairs(state.cache) do genv.LoopXCode_PacifyGuardian(guardian) end
         else
             genv.LoopXCode_AntiHitActive = false
@@ -4201,11 +4279,17 @@ local function setHandleValue(handle, value)
 end
 
 local function loadNamedConfig(name)
+    -- Load Config / startup restore tidak boleh memicu notifikasi.
+    local prevSuppress = genv.LoopXCode_SuppressNotify
+    genv.LoopXCode_SuppressNotify = true
     name = tostring(name or "")
     if name == "" then name = "default" end
     local bank = readConfigBank()
     local data = bank[name]
-    if type(data) ~= "table" then return false end
+    if type(data) ~= "table" then
+        genv.LoopXCode_SuppressNotify = prevSuppress
+        return false
+    end
     ConfigCfg.Name = tostring(data.ConfigName or name)
     setHandleValue(UIHandles["Config Name"], ConfigCfg.Name)
 
@@ -4315,6 +4399,7 @@ local function loadNamedConfig(name)
     pcall(function() genv.LoopXCode_ReapplyFonts() end)
     task.spawn(function() pcall(function() genv.LoopXCode_RefreshFinder() end) end)
     pcall(genv.LoopXCode_HardenSave)
+    genv.LoopXCode_SuppressNotify = prevSuppress
     return true
 end
 genv.LoopXCode_LoadConfig = loadNamedConfig
@@ -4909,6 +4994,9 @@ local function buildWindUI()
     local EventTab = UIWindow:Tab({ Title = "Event", Icon = "calendar" })
     local FeaturesTab = UIWindow:Tab({ Title = "Features", Icon = "list" })
     local SettingsTab = UIWindow:Tab({ Title = "Settings", Icon = "settings-2" })
+    -- Auto Sell sengaja punya tab sendiri, terpisah dari Controls/Features.
+    -- Finder tetap di urutan kedua supaya tab-nya tidak terdorong keluar bar.
+    local SellTab = UIWindow:Tab({ Title = "Sell", Icon = "coins" })
     local function featureHay(title, name)
         local realName = tostring(name or ""):gsub("^Harden:", "")
         local cleanTitle = tostring(title or realName)
@@ -5341,13 +5429,17 @@ local function buildWindUI()
     })
     UIHandles["Weak Lasso Catch"] = weakCatchToggle
 
-    -- ---------- Auto Sell Pet ----------
-    local SellSection = trackSection("Auto Sell", Tab:Section({ Title = "Auto Sell", Opened = true }))
+    -- ---------- Tab: Sell (Auto Sell dipisah dari Controls/Features) ----------
+    local SellSection = trackSection("Auto Sell", SellTab:Section({ Title = "Auto Sell", Opened = true }))
     local autoSellToggle = SellSection:Toggle({
         Title = "Auto Sell Pet",
         Desc = "Sell every selected rarity automatically",
         Value = SellCfg.Enabled,
-        Callback = function(v) SellCfg.Enabled = (v == true) end
+        Callback = function(v)
+            SellCfg.Enabled = (v == true)
+            hubNotify(tr(SellCfg.Enabled and "Auto Sell ON" or "Auto Sell OFF"),
+                SellCfg.Enabled and "Success" or "Info")
+        end
     })
     UIHandles["Auto Sell Pet"] = autoSellToggle
     local sellIntervalInput = SellSection:Input({
@@ -5378,7 +5470,16 @@ local function buildWindUI()
     SellSection:Button({
         Title = "Sell Now",
         Desc = "Sell selected rarities once",
-        Callback = function() task.spawn(function() genv.LoopXCode_SellPetsNow() end) end
+        Callback = function()
+            task.spawn(function()
+                local sold = tonumber(genv.LoopXCode_SellPetsNow()) or 0
+                if sold > 0 then
+                    hubNotify(string.format(tr("Sell Now: %d pets"), sold), "Success")
+                else
+                    hubNotify(tr("Sell Now: no pets"), "Info")
+                end
+            end)
+        end
     })
 
     -- ---------- Tab: Finder Pet ----------
@@ -6029,3 +6130,184 @@ buildWindUI()
         end
     end)
 end)(ParentGui)
+
+-- =====================================================================
+-- 8. ANDROID EXECUTOR NOTIFICATION CLEANUP
+-- =====================================================================
+-- Dogle bikin banner "minimized" di tengah atas saat menu executor
+-- dikecilin. Banner itu cuma muncul di Android/HP, bukan di PC. Sapu hanya
+-- overlay executor yang cocok; semua root LXC / WindUI / notifikasi game
+-- sengaja dikecualikan supaya toggle dan notifikasi hub tetap ada.
+;(function()
+    local isAndroid = false
+    pcall(function()
+        isAndroid = UserInputService:GetPlatform() == Enum.Platform.Android
+    end)
+    local touchOnly = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+    if not isAndroid and not touchOnly then return end
+
+    pcall(function()
+        local old = genv.LoopXCode_AndroidOverlayCleanup
+        if type(old) == "table" then
+            for _, conn in ipairs(old.connections or {}) do
+                pcall(function() conn:Disconnect() end)
+            end
+        end
+    end)
+
+    local state = { connections = {}, hidden = 0, fullSwept = false }
+    genv.LoopXCode_AndroidOverlayCleanup = state
+
+    local roots = {}
+    local function addRoot(r)
+        if r and not table.find(roots, r) then roots[#roots + 1] = r end
+    end
+    addRoot(ParentGui)
+    pcall(function() addRoot(CoreGui) end)
+    pcall(function() addRoot(LocalPlayer:FindFirstChild("PlayerGui")) end)
+
+    local function protectedObject(o)
+        local node = o
+        while node do
+            local n = string.lower(tostring(node.Name or ""))
+            if n:find("lxc", 1, true) or n:find("loopxcode", 1, true)
+                or n:find("windui", 1, true) or n == "notifications" then
+                return true
+            end
+            node = node.Parent
+        end
+        return false
+    end
+
+    local function suspiciousName(o)
+        local n = string.lower(tostring(o.Name or ""))
+        return n:find("dogle", 1, true) ~= nil
+            or n:find("notif", 1, true) ~= nil
+            or n:find("toast", 1, true) ~= nil
+            or n:find("banner", 1, true) ~= nil
+            or n:find("minimi", 1, true) ~= nil
+    end
+
+    local function textMarked(o)
+        if o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox") then
+            local t = string.lower(tostring(o.Text or ""))
+            return t:find("minimi", 1, true) ~= nil
+                or t:find(" minimized", 1, true) ~= nil
+                or t:find("diminimal", 1, true) ~= nil
+        end
+        return false
+    end
+
+    local function topCenter(o)
+        if not o:IsA("GuiObject") or not o.Visible then return false end
+        local camera = workspace.CurrentCamera
+        if not camera then return false end
+        local pos, size = o.AbsolutePosition, o.AbsoluteSize
+        if size.X < 24 or size.Y < 10 or size.Y > 160 then return false end
+        local vp = camera.ViewportSize
+        local centerX = pos.X + size.X / 2
+        return math.abs(centerX - vp.X / 2) <= math.max(150, vp.X * 0.3)
+            and pos.Y <= vp.Y * 0.36
+    end
+
+    local function hasTopCenterMinimizeText(root)
+        for _, o in ipairs(root:GetDescendants()) do
+            if textMarked(o) and topCenter(o) then return true end
+        end
+        return false
+    end
+
+    local function removeOverlay(o)
+        if not o or protectedObject(o) then return end
+        pcall(function() o:Destroy() end)
+        state.hidden = state.hidden + 1
+    end
+
+    local function checkObject(o)
+        if not o or protectedObject(o) then return end
+        if o:IsA("ScreenGui") then
+            local n = string.lower(tostring(o.Name or ""))
+            if n:find("notif", 1, true) or n:find("toast", 1, true)
+                or n:find("banner", 1, true) or n:find("minimi", 1, true) then
+                removeOverlay(o)
+            elseif n:find("dogle", 1, true) and hasTopCenterMinimizeText(o) then
+                -- Root executor sengaja dibiarkan; cuma banner minimized-nya
+                -- yang dibuang supaya tombol/menu Dogle tetap bisa dipakai.
+                for _, d in ipairs(o:GetDescendants()) do
+                    if textMarked(d) and topCenter(d) then
+                        local banner = d
+                        while banner and banner ~= o do
+                            if banner:IsA("Frame") then
+                                removeOverlay(banner)
+                                break
+                            end
+                            banner = banner.Parent
+                        end
+                    end
+                end
+            end
+            return
+        end
+        if not o:IsA("GuiObject") then return end
+        local n = string.lower(tostring(o.Name or ""))
+        local nameHit = n:find("notif", 1, true) or n:find("toast", 1, true)
+            or n:find("banner", 1, true) or n:find("minimi", 1, true)
+        if nameHit and topCenter(o) then
+            removeOverlay(o)
+        elseif textMarked(o) and topCenter(o) then
+            local banner = o
+            while banner and banner ~= ParentGui do
+                if banner:IsA("ScreenGui") or banner:IsA("Frame") then
+                    removeOverlay(banner)
+                    return
+                end
+                banner = banner.Parent
+            end
+        end
+    end
+
+    local function sweep()
+        local fullScan = not state.fullSwept
+        for _, root in ipairs(roots) do
+            if root and root.Parent then
+                -- gethui() dipindai tiap kali. CoreGui/PlayerGui cukup sekali
+                -- saat startup; setelah itu DescendantAdded yang menangkap
+                -- banner baru, supaya UI game nggak terus-menerus discan.
+                if root == ParentGui or fullScan then
+                    for _, o in ipairs(root:GetDescendants()) do checkObject(o) end
+                else
+                    for _, o in ipairs(root:GetChildren()) do
+                        if suspiciousName(o) then checkObject(o) end
+                    end
+                end
+            end
+        end
+        state.fullSwept = true
+    end
+    state.sweep = sweep
+
+    local lastSweep = 0
+    state.connections[#state.connections + 1] = RunService.Heartbeat:Connect(function()
+        local now = os.clock()
+        if now - lastSweep < 0.35 then return end
+        lastSweep = now
+        pcall(sweep)
+    end)
+
+    for _, root in ipairs(roots) do
+        if root then
+            pcall(function()
+                state.connections[#state.connections + 1] = root.DescendantAdded:Connect(function(o)
+                    task.defer(function()
+                        if genv.LoopXCode_AndroidOverlayCleanup ~= state then return end
+                        pcall(function() checkObject(o) end)
+                    end)
+                end)
+            end)
+        end
+    end
+
+    task.defer(function()
+        if genv.LoopXCode_AndroidOverlayCleanup == state then pcall(sweep) end
+    end)
+end)()
