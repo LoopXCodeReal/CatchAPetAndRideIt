@@ -8,7 +8,8 @@
       4. Restore snapshot toggle di-reset supaya tidak memakai data basi.
       5. FPS/Ping tampil sebagai paragraph WindUI, bukan HUD manual.
       6. Floating open button pakai drag+klik terpadu, satu jalur klik.
-      7. RADIUS PASS: semua sisi radius (window, elemen, dropdown, HUD, float).
+      7. RADIUS PASS selektif: cuma container/baris/menu yang dibulatkan.
+      8. HUD floating transparan total (tanpa latar kotak).
     ====================================================================
 ]]
 
@@ -3153,19 +3154,17 @@ local function buildWindUI()
         ScrollBarEnabled = false
     })
 
-    -- WindUI Dark theme ngasih tiap toggle/dropdown/section bayangan kotak
-    -- hitam (LabelBackgroundTransparency = 0.83). Sekarang kotaknya dipakai
-    -- lagi tapi tipis, dan semua sudutnya di-radius lewat theme + RADIUS PASS
-    -- di bawah, jadi elemen kelihatan seperti kartu rounded, bukan kotak.
+    -- Latar kotak bawaan theme dimatikan. Radius dalam sengaja 0: yang boleh
+    -- bulat cuma window + wallpaper; baris/tombol/dropdown kotak biar rapi.
     pcall(function()
         local themes = lib.Themes
         local dark = type(themes) == "table" and themes.Dark or nil
         if type(dark) == "table" then
-            dark.LabelBackground = Color3.fromRGB(24, 28, 42)   -- bukan hitam
-            dark.LabelBackgroundTransparency = 0.42
-            dark.CornerRadius = UDim.new(0, 12)
-            dark.ElementCornerRadius = UDim.new(0, 10)
-            dark.WindowCornerRadius = UDim.new(0, 14)
+            dark.LabelBackgroundTransparency = 1
+            dark.LabelBackground = Color3.fromRGB(24, 28, 42)
+            dark.CornerRadius = UDim.new(0, 0)
+            dark.ElementCornerRadius = UDim.new(0, 0)
+            dark.WindowCornerRadius = UDim.new(0, 16)
         end
         if type(lib.SetTheme) == "function" then lib:SetTheme("Dark") end
     end)
@@ -3314,11 +3313,9 @@ local function buildWindUI()
             if typeof(ui.Menu) == "Instance" then
                 ui.Menu.ImageColor3 = Color3.fromRGB(18, 22, 34)
                 ui.Menu.ImageTransparency = 0.02
-                local c = ui.Menu:FindFirstChildOfClass("UICorner")
-                if c then
-                    c.CornerRadius = UDim.new(0, 12)
-                else
-                    Instance.new("UICorner", ui.Menu).CornerRadius = UDim.new(0, 12)
+                -- Dropdown adalah elemen dalam: sudut kotak, jangan ikut bulat window.
+                for _, c in ipairs(ui.Menu:GetChildren()) do
+                    if c:IsA("UICorner") then c.CornerRadius = UDim.new(0, 0) end
                 end
             end
             if typeof(ui.MenuCanvas) == "Instance" then
@@ -3329,8 +3326,8 @@ local function buildWindUI()
                         o.BackgroundTransparency = 1
                     elseif o:IsA("ImageButton") then
                         o.ImageColor3 = Color3.fromRGB(30, 34, 50)
-                        if not o:FindFirstChildOfClass("UICorner") then
-                            Instance.new("UICorner", o).CornerRadius = UDim.new(0, 8)
+                        for _, c in ipairs(o:GetChildren()) do
+                            if c:IsA("UICorner") then c.CornerRadius = UDim.new(0, 0) end
                         end
                     end
                 end
@@ -3373,12 +3370,13 @@ local function buildWindUI()
         frame.Name = "LXC_MenuBackground"
         frame.Size = UDim2.fromScale(1, 1)
         frame.BorderSizePixel = 0
-        -- Frame induk harus benar-benar transparan. Kalau ada warna + corner
-        -- di sini, wallpaper kelihatan seperti kotak panel di dalam menu.
+        -- Frame induk transparan, tapi sudutnya mengikuti window dan anaknya
+        -- di-clip. Ini bikin gradient/pattern nggak keluar di sudut kotak.
         frame.BackgroundTransparency = 1
-        frame.ClipsDescendants = false
+        frame.ClipsDescendants = true
         frame.ZIndex = 0
         frame.Parent = holder
+        Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 16)
 
         local function fullLayer(name, color, z)
             local f = Instance.new("Frame")
@@ -4066,8 +4064,8 @@ local function buildWindUI()
 
     -- ---------- Floating ICONLXC-style logo + HUD (SATU button saja) ----------
     -- Template ICONLXC: kotak #0e0e12, corner 14, stroke #3a3a44, accent pill.
-    -- Logo tetap solid seperti template; yang transparan dan diperbesar adalah
-    -- HUD FPS/CPU/GPU/status. Logo pakai FredokaOne + outline hitam seperti template.
+    -- HUD FPS/CPU/GPU/status dibiarkan TRANSPARAN TOTAL (tanpa latar kotak),
+    -- teks tetap kebaca karena ada bayangan teks hitam di belakangnya.
     -- Fungsi terpisah supaya register lokal WindUI induk nggak jebol.
     local function buildFloatingLogo()
     local FloatGui = Instance.new("ScreenGui")
@@ -4143,7 +4141,7 @@ local function buildWindUI()
     local HudShadow = Instance.new("TextLabel")
     HudShadow.Name = "HUDShadow"
     HudShadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-    HudShadow.BackgroundTransparency = 0.55
+    HudShadow.BackgroundTransparency = 1
     HudShadow.Font = Enum.Font.GothamBold
     HudShadow.TextColor3 = Color3.fromRGB(0, 0, 0)
     HudShadow.TextXAlignment = Enum.TextXAlignment.Center
@@ -4151,14 +4149,13 @@ local function buildWindUI()
     HudShadow.Text = hudPlainText()
     HudShadow.Active = false
     HudShadow.Parent = FloatGui
-    Instance.new("UICorner", HudShadow).CornerRadius = UDim.new(0, 14)
 
     local FloatStatus = Instance.new("TextLabel")
     FloatStatus.Name = "HUD"
     FloatStatus.Size = UDim2.new(0, HudCfg.Width, 0, HudCfg.Height)
     FloatStatus.Position = UDim2.new(0.5, -HudCfg.Width / 2, 0, HudCfg.Gap)
     FloatStatus.BackgroundColor3 = Color3.fromRGB(10, 12, 20)
-    FloatStatus.BackgroundTransparency = 0.72
+    FloatStatus.BackgroundTransparency = 1
     FloatStatus.Font = Enum.Font.GothamBold
     FloatStatus.TextSize = HudCfg.TextSize
     FloatStatus.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -4168,7 +4165,6 @@ local function buildWindUI()
     FloatStatus.Text = hudRichText()
     FloatStatus.Active = true
     FloatStatus.Parent = FloatGui
-    Instance.new("UICorner", FloatStatus).CornerRadius = UDim.new(0, 14)
 
     local function clampHudPos(pos)
         local w = math.max(1, math.floor(tonumber(HudCfg.Width) or 720))
@@ -4306,22 +4302,15 @@ end
 buildWindUI()
 
 -- =====================================================================
--- 7. RADIUS PASS — radius semua sisi, kotak/bayangan hitam dibuang
+-- 7. RADIUS PASS — paling luar saja
 -- =====================================================================
--- Catatan penting: pass TIDAK boleh mengandalkan AbsoluteSize tepat setelah
--- build, karena layout WindUI belum dihitung (semua 0). Karena itu:
---   * UICorner dipasang tanpa syarat ukuran,
---   * bayangan dibasmi lewat nama DAN geometri (objek lebih besar dari induk),
---   * pass diulang bertahap + tiap ada objek baru (tab dibuka / finder refresh).
+-- Yang boleh bulat: window, wallpaper menu, floating LXC, kartu loading.
+-- Semua elemen dalam (baris, tombol, input, dropdown, scrollbar) dipaksa
+-- kotak supaya nggak ada bulatan kecil di setiap sisi yang bikin menu aneh.
 do
     local RADIUS_WINDOW = UDim.new(0, 16)
-    local RADIUS_PANEL = UDim.new(0, 12)
-    local RADIUS_ELEMENT = UDim.new(0, 10)
-    local RADIUS_PILL = UDim.new(1, 0)
-    local CARD_COLOR = Color3.fromRGB(24, 28, 42)
-    local CARD_ALPHA = 0.42
-    local STROKE_COLOR = Color3.fromRGB(48, 54, 74)
-    local STROKE_ALPHA = 0.4
+    local WINDOW_BG = Color3.fromRGB(14, 16, 24)
+    local RESIZE_GRIP_IMAGE = "120997033468887"
 
     local function ensureCorner(obj, radius)
         if not obj or not obj:IsA("GuiObject") then return nil end
@@ -4340,46 +4329,70 @@ do
         return nil
     end
 
-    local function radiusFor(obj)
-        local name = string.lower(tostring(obj.Name or ""))
-        if name:find("scrollbar", 1, true) or name:find("pill", 1, true)
-            or name == "bar" or name == "thumb" then
-            return RADIUS_PILL
-        end
-        local h = obj.AbsoluteSize.Y
-        if h >= 120 then return RADIUS_WINDOW end
-        if h >= 44 then return RADIUS_PANEL end
-        return RADIUS_ELEMENT
-    end
-
-    local function isNearBlack(c)
-        return c.R < 0.16 and c.G < 0.16 and c.B < 0.16
-    end
-
-    local function killShadow(obj)
-        if not obj:IsA("GuiObject") then return false end
-        if string.lower(tostring(obj.Name or "")):find("shadow", 1, true) then
-            pcall(function()
-                obj.Visible = false
-                obj.BackgroundTransparency = 1
-            end)
-            return true
+    local function insideMenuWallpaper(obj)
+        local node = obj
+        while node do
+            if node.Name == "LXC_MenuBackground" then return true end
+            node = node.Parent
         end
         return false
     end
 
-    -- Bayangan yang namanya bukan "shadow" tetap ketangkap di sini: cirinya
-    -- selalu LEBIH BESAR dari induknya (offset -3 dengan ukuran +6).
-    local function killOversizedChildren(row)
-        local rs = row.AbsoluteSize
-        if rs.X <= 0 or rs.Y <= 0 then return end
-        for _, c in ipairs(row:GetChildren()) do
-            if c:IsA("GuiObject") and c ~= row then
-                local cs = c.AbsoluteSize
-                if cs.X > rs.X + 1 and cs.Y > rs.Y + 1 then
+    -- Elemen dalam dipaksa kotak. Cuma radius yang dinolkan; warna/teks asli
+    -- WindUI dibiarkan supaya perubahan tetap minimal.
+    local function clearInnerRadius(obj)
+        if not obj then return end
+        pcall(function()
+            for _, c in ipairs(obj:GetChildren()) do
+                if c:IsA("UICorner") then c.CornerRadius = UDim.new(0, 0) end
+            end
+        end)
+    end
+
+    -- Bayangan = nama mengandung "shadow", ATAU objek daun (tanpa anak) yang
+    -- letaknya di belakang induk dan lebih besar. Syarat "daun" penting supaya
+    -- container yang kebetulan lebih besar nggak ikut dimatikan.
+    local function isShadowLike(obj)
+        local name = string.lower(tostring(obj.Name or ""))
+        if name:find("shadow", 1, true) then return true end
+
+        -- Grip resize WindUI: image 96x96 di dalam frame 32x32. Jangan
+        -- dikira bayangan, karena ini pegangan putih pojok kanan bawah.
+        if obj:IsA("ImageLabel") then
+            local ok, img = pcall(function() return obj.Image end)
+            if ok and tostring(img):find(RESIZE_GRIP_IMAGE, 1, true) then return false end
+        end
+
+        if #obj:GetChildren() > 0 then return false end
+        local parent = obj.Parent
+        if not parent or not parent:IsA("GuiObject") then return false end
+        local ps, cs = parent.AbsoluteSize, obj.AbsoluteSize
+        if ps.X <= 0 or ps.Y <= 0 then return false end
+        return obj.ZIndex <= parent.ZIndex and cs.X > ps.X + 1 and cs.Y > ps.Y + 1
+    end
+
+    local function hideShadow(obj)
+        pcall(function()
+            obj.Visible = false
+            if obj:IsA("ImageLabel") or obj:IsA("ImageButton") then
+                obj.ImageTransparency = 1
+            end
+            obj.BackgroundTransparency = 1
+        end)
+    end
+
+    -- WindUI menween grip resize ke 0.8 saat Open dan 0.35 saat hover.
+    -- Sapuan radius jangan mematikan grip ini; kalau pernah ketutup, nyalakan
+    -- lagi tanpa merusak transparansi hover.
+    local function restoreResizeGrip(root)
+        if not root then return end
+        for _, o in ipairs(root:GetDescendants()) do
+            if o:IsA("ImageLabel") then
+                local ok, img = pcall(function() return o.Image end)
+                if ok and tostring(img):find(RESIZE_GRIP_IMAGE, 1, true) then
                     pcall(function()
-                        c.Visible = false
-                        c.BackgroundTransparency = 1
+                        o.Visible = true
+                        if o.ImageTransparency >= 0.99 then o.ImageTransparency = 0.8 end
                     end)
                 end
             end
@@ -4388,46 +4401,40 @@ do
 
     local function polish(obj)
         if not obj or not obj:IsA("GuiObject") then return end
-        if obj.Name == "HUD" or obj.Name == "HUDShadow" then return end
-        if killShadow(obj) then return end
+        local name = tostring(obj.Name or "")
+        local lower = string.lower(name)
 
-        if obj:IsA("ScrollingFrame") then
-            ensureCorner(obj, RADIUS_PANEL)
+        -- HUD cuma teks: latar transparan, tanpa corner/outline kotak.
+        if name == "HUD" or name == "HUDShadow" then
+            pcall(function()
+                obj.BackgroundTransparency = 1
+                if obj:IsA("ImageLabel") or obj:IsA("ImageButton") then
+                    obj.ImageTransparency = 1
+                end
+            end)
+            clearInnerRadius(obj)
             return
         end
 
-        local isSurface = obj:IsA("Frame") or obj:IsA("TextButton")
-        local isOther = obj:IsA("ImageLabel") or obj:IsA("ImageButton")
-            or obj:IsA("TextLabel") or obj:IsA("TextBox")
-        if not (isSurface or isOther) then return end
-
-        -- Radius dipasang lebih dulu, tanpa syarat ukuran.
-        ensureCorner(obj, radiusFor(obj))
-        if not isSurface then return end
-
-        killOversizedChildren(obj)
-
-        -- Hitam pekat bawaan theme diganti slate, jadi nggak ada kotak hitam.
-        -- Kalau latarnya transparan, dikasih card slate tipis supaya radiusnya
-        -- tetap kelihatan tanpa perlu bayangan.
-        if obj.BackgroundTransparency < 1 then
-            if isNearBlack(obj.BackgroundColor3) then
-                pcall(function() obj.BackgroundColor3 = CARD_COLOR end)
-            end
-            if obj.BackgroundTransparency > 0.9 then
-                pcall(function() obj.BackgroundTransparency = CARD_ALPHA end)
-            end
-            if not obj:FindFirstChildOfClass("UIStroke") then
-                pcall(function()
-                    local s = Instance.new("UIStroke")
-                    s.Thickness = 1
-                    s.Color = STROKE_COLOR
-                    s.Transparency = STROKE_ALPHA
-                    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-                    s.Parent = obj
-                end)
-            end
+        -- Wallpaper mengikuti sudut window. Cuma lapisan ini yang boleh bulat;
+        -- "Background" di dalam elemen lain nggak boleh ikut terkena.
+        local isWindowPlate = name == "Background" and obj.Parent
+            and obj.Parent.Name == "Main"
+        local isWallpaper = name == "LXC_MenuBackground"
+            or ((lower == "gradient" or lower:find("pattern", 1, true))
+                and insideMenuWallpaper(obj))
+        if isWindowPlate or isWallpaper then
+            ensureCorner(obj, RADIUS_WINDOW)
+            return
         end
+
+        if isShadowLike(obj) then
+            hideShadow(obj)
+            return
+        end
+
+        -- Semua elemen lain (baris, tombol, input, dropdown, scrollbar) kotak.
+        clearInnerRadius(obj)
     end
 
     local function sweep()
@@ -4435,7 +4442,9 @@ do
         local root = win and win.UIElements and win.UIElements.Main or nil
         if not root then return end
         ensureCorner(root, RADIUS_WINDOW)
+        pcall(function() root.BackgroundColor3 = WINDOW_BG end)
         for _, o in ipairs(root:GetDescendants()) do polish(o) end
+        restoreResizeGrip(root)
     end
 
     local root = nil
@@ -4445,17 +4454,11 @@ do
     end)
 
     if root then
-        -- Bertahap: 0 (sekarang), 0.15, 0.5, 1.2, 2.5 detik. Layout baru stabil
-        -- setelah frame pertama, jadi sapuan awal saja tidak cukup.
-        for _, delay in ipairs({ 0, 0.15, 0.5, 1.2, 2.5 }) do
-            task.delay(delay, function()
-                if genv.LoopXCode_UIWindow == genv.LoopXCode_UIWindow then
-                    pcall(sweep)
-                end
-            end)
+        -- Layout WindUI baru stabil setelah frame pertama dan tab dibangun saat
+        -- pertama diklik, jadi sapuan diulang bertahap.
+        for _, delay in ipairs({ 0, 0.15, 0.5, 1.2, 2.5, 4 }) do
+            task.delay(delay, function() pcall(sweep) end)
         end
-        -- Tab WindUI dibangun saat pertama kali diklik: elemen baru langsung
-        -- diurus setelah layout-nya jadi.
         pcall(function()
             root.DescendantAdded:Connect(function(o)
                 task.delay(0.1, function() pcall(polish, o) end)
@@ -4463,37 +4466,22 @@ do
         end)
     end
 
-    -- Floating logo + HUD.
+    -- Floating logo: radius. HUD + shadow tetap transparan (cuma teks).
     pcall(function()
         local floatGui = ParentGui:FindFirstChild("LXC_ToggleGui")
         if not floatGui then return end
-        for _, o in ipairs(floatGui:GetDescendants()) do
-            if o:IsA("GuiObject") and string.lower(tostring(o.Name or "")):find("shadow", 1, true) then
-                pcall(function() o.Visible = false end)
-            end
-        end
         local btn = floatGui:FindFirstChild("LOOPXCODE_FloatingToggle")
         if btn then ensureCorner(btn, RADIUS_WINDOW) end
         local hud = floatGui:FindFirstChild("HUD")
-        if hud then
-            ensureCorner(hud, UDim.new(0, 14))
-            pcall(function()
-                hud.BackgroundColor3 = Color3.fromRGB(16, 20, 32)
-                hud.BackgroundTransparency = 0.6
-            end)
-        end
+        if hud then pcall(function() hud.BackgroundTransparency = 1 end) end
         local shadow = floatGui:FindFirstChild("HUDShadow")
-        if shadow then
-            ensureCorner(shadow, UDim.new(0, 14))
-            pcall(function()
-                shadow.BackgroundColor3 = Color3.fromRGB(12, 14, 22)
-                shadow.BackgroundTransparency = 0.7
-                shadow.Visible = true
-            end)
-        end
+        if shadow then pcall(function()
+            shadow.BackgroundTransparency = 1
+            shadow.Visible = true
+        end) end
     end)
 
-    -- Kartu loading.
+    -- Kartu loading: radius, tanpa bayangan kotak.
     pcall(function()
         local lg = ParentGui:FindFirstChild("LXC_LoadingGui")
         local dim = lg and lg:FindFirstChildWhichIsA("Frame")
