@@ -4,7 +4,7 @@
     Perbaikan:
       1. Satu UI saja: WindUI. Komponen dibangun dari registry, bukan frame manual.
       2. Auto Catch pakai satu driver loop (tidak ada lagi chain dobel).
-      3. Key HardenCfg.AntiSpeed -> AutoAntiSpeed diperbaiki.
+      3. Key genv.LoopXCode_HardenCfg.AntiSpeed -> AutoAntiSpeed diperbaiki.
       4. Restore snapshot toggle di-reset supaya tidak memakai data basi.
       5. FPS/Ping tampil sebagai paragraph WindUI, bukan HUD manual.
       6. Floating open button pakai drag+klik terpadu, satu jalur klik.
@@ -20,9 +20,14 @@ local CoreGui = game:GetService("CoreGui")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local Workspace = game:GetService("Workspace")
+local CollectionService = game:GetService("CollectionService")
 
 local LocalPlayer = Players.LocalPlayer
 local genv = (type(getgenv) == "function") and getgenv() or _G
+-- execute-file tidak memberi STATE, jadi pakai epoch sendiri supaya loop dari
+-- run lama berhenti saat file dijalankan ulang.
+genv.LoopXCode_RunEpoch = (tonumber(genv.LoopXCode_RunEpoch) or 0) + 1
+local RUN_EPOCH = genv.LoopXCode_RunEpoch
 
 -- =====================================================================
 -- FONT — pakai keluarga Gotham yang bersih dan enak dibaca.
@@ -118,6 +123,11 @@ local LANG_TEXT = {
 
     ["Auto Claim Index"] = "Klaim Index Otomatis", ["Auto Upgrade"] = "Upgrade Otomatis",
     ["Auto Upgrade Treadmill"] = "Upgrade Treadmill Otomatis", ["Auto Treadmill"] = "Treadmill Otomatis",
+    ["Anti Hit"] = "Anti Serangan", ["Auto Sell Pet"] = "Jual Pet Otomatis",
+    ["Sell Rarities"] = "Rarity Dijual", ["Sell Now"] = "Jual Sekarang",
+    ["Search Features"] = "Cari Fitur", ["Search all features"] = "Cari semua fitur",
+    ["Auto Sell"] = "Jual Otomatis", ["Sell Interval"] = "Interval Jual",
+    ["Experimen"] = "Eksperimen", ["Weak Lasso Catch"] = "Tangkap Lasso Lemah",
     ["Anti Ban"] = "Anti Ban", ["Anti AFK"] = "Anti AFK", ["God Mode"] = "Mode Dewa",
     ["Fly"] = "Terbang", ["Jump Infinity"] = "Lompat Tak Terbatas",
     ["Anti Knock Down"] = "Anti Jatuh", ["Invisible"] = "Tidak Terlihat",
@@ -128,9 +138,20 @@ local LANG_TEXT = {
         "ON = naik pet tercepat / OFF = turun dari pet (mati otomatis saat Auto Treadmill ON)",
     ["Force all hub text to Gotham (clean and readable)"] = "Paksa semua teks hub pakai Gotham (bersih & enak dibaca)",
     ["5k / 30b / 50t  (blank = any)"] = "5k / 30b / 50t  (kosong = semua)",
-    ["Nama pet, mis. Bunny"] = "Nama pet, mis. Bunny",
+    ["Pet name, e.g. Bunny"] = "Nama pet, mis. Bunny",
+    ["lasso too weak: "] = "lasso kurang kuat: ",
+    ["strong enough"] = "cukup kuat", ["too weak"] = "kurang kuat",
+    ["Failed"] = "Gagal", ["Done"] = "Selesai", ["Weak"] = "Lemah",
+    ["Total pets"] = "Total pet", ["Lasso"] = "Lasso", ["Total"] = "Total",
+    ["0.55  (0 = off, 1 = solid)"] = "0.55  (0 = mati, 1 = pekat)",
+    ["#38BDF8  or  56,189,248"] = "#38BDF8  atau  56,189,248",
     ["Auto upgrade pen via valid 'sign' remote (off by default)"] = "Auto upgrade kandang via valid 'sign' remote (off by default)",
     ["manual steal (lasso still checked)"] = "manual steal (lasso tetap dicek)",
+    ["Catch weak-lasso pets; still walks back to the safe zone"] = "Tangkap pet dengan lasso lemah; tetap kembali ke safe zone",
+    ["Sell every selected rarity automatically"] = "Jual semua rarity yang dipilih otomatis",
+    ["Select multiple rarities to sell"] = "Pilih beberapa rarity untuk dijual",
+    ["Sell selected rarities once"] = "Jual rarity yang dipilih sekali",
+    ["auto sell"] = "jual otomatis", ["pets"] = "pet",
     ["All"] = "Semua", ["English"] = "English", ["Indonesia"] = "Indonesia"
 }
 genv.LoopXCode_LangText = LANG_TEXT
@@ -140,6 +161,11 @@ local function translateKey(key, lang)
     if lang == "Indonesia" then return LANG_TEXT[key] or key end
     return key
 end
+
+local function tr(key)
+    return translateKey(key, LangCfg.Language)
+end
+genv.LoopXCode_Translate = tr
 
 local function applyFont(instance: GuiObject, fontFace: Font, textSize: number?)
     if instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox") then
@@ -172,7 +198,8 @@ genv.LoopXCode_ApplyFontTree = applyFontTree
 -- live-reload: loop lama nggak bisa dihentikan kalau cuma pakai flag bersama.
 -- Instance baru pakai flag V2; flag lama dipaksa false supaya instance lama diam.
 local alive = (type(STATE) == "table" and type(STATE.alive) == "function")
-    and STATE.alive or function() return true end
+    and function() return STATE.alive() and genv.LoopXCode_RunEpoch == RUN_EPOCH end
+    or function() return genv.LoopXCode_RunEpoch == RUN_EPOCH end
 genv.LoopXCode_AutoEquipSpeed = false
 genv.LoopXCode_AutoEquipV2 = true
 
@@ -191,7 +218,7 @@ local ParentGui = GetSafeGuiParent()
 for _, o in ipairs(ParentGui:GetChildren()) do
     if o.Name == "LoopXCodeUI" or o.Name == "LoopXCode_FloatingToggle"
         or o.Name == "LXC_ToggleGui" or o.Name == "LXC_MenuBackground"
-        or o.Name == "LoopXCode_ESP_Holder" then
+        or o.Name == "LXC_LoadingGui" or o.Name == "LoopXCode_ESP_Holder" then
         pcall(function() o:Destroy() end)
     end
 end
@@ -202,7 +229,7 @@ pcall(function()
         for _, k in ipairs({
             "AutoClaimIndex", "AutoUpgradeTraining", "AutoUpgradeTreadmill", "AutoTreadmill", "AntiBan", "AntiAFK",
             "GodMode", "Fly", "JumpInfinity", "AntiKnockDown", "Invisible",
-            "AntiRagdoll", "AutoAntiSpeed"
+            "AntiRagdoll", "AutoAntiSpeed", "AntiHit"
         }) do prev[k] = false end
     end
 end)
@@ -235,12 +262,88 @@ local function OnCleanup(fn)
     end
 end
 
+-- Loading screen muncul SEKETIKA script dieksekusi, sebelum require modul game
+-- dan download WindUI. Ditutup setelah hub selesai dibangun; tidak pakai notifikasi.
+local LoadingGui = Instance.new("ScreenGui")
+LoadingGui.Name = "LXC_LoadingGui"
+LoadingGui.ResetOnSpawn = false
+LoadingGui.IgnoreGuiInset = true
+LoadingGui.DisplayOrder = 200
+LoadingGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+LoadingGui.Parent = ParentGui
+
+local LoadingDim = Instance.new("Frame")
+LoadingDim.Size = UDim2.fromScale(1, 1)
+LoadingDim.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
+LoadingDim.BackgroundTransparency = 0.08
+LoadingDim.BorderSizePixel = 0
+LoadingDim.Parent = LoadingGui
+
+local LoadingCard = Instance.new("Frame")
+LoadingCard.Size = UDim2.fromOffset(240, 96)
+LoadingCard.Position = UDim2.fromScale(0.5, 0.5)
+LoadingCard.AnchorPoint = Vector2.new(0.5, 0.5)
+LoadingCard.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
+LoadingCard.BorderSizePixel = 0
+LoadingCard.Parent = LoadingDim
+Instance.new("UICorner", LoadingCard).CornerRadius = UDim.new(0, 14)
+AddStroke(LoadingCard, 1.5, Color3.fromRGB(58, 58, 68), 0)
+
+local LoadingTitle = Instance.new("TextLabel")
+LoadingTitle.Name = "LoadingTitle"
+LoadingTitle.Size = UDim2.new(1, 0, 0, 34)
+LoadingTitle.Position = UDim2.new(0, 0, 0.12, 0)
+LoadingTitle.BackgroundTransparency = 1
+LoadingTitle.FontFace = SafeFonts.Logo
+LoadingTitle.Text = "LOOPXCODE"
+LoadingTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+LoadingTitle.TextSize = 22
+LoadingTitle.Parent = LoadingCard
+AddTextStroke(LoadingTitle, 1)
+
+local LoadingText = Instance.new("TextLabel")
+LoadingText.Name = "LoadingText"
+LoadingText.Size = UDim2.new(1, 0, 0, 22)
+LoadingText.Position = UDim2.new(0, 0, 0.62, 0)
+LoadingText.BackgroundTransparency = 1
+LoadingText.FontFace = SafeFonts.Bold
+LoadingText.Text = "Loading..."
+LoadingText.TextColor3 = Color3.fromRGB(180, 190, 210)
+LoadingText.TextSize = 13
+LoadingText.Parent = LoadingCard
+
+local LoadingBarBg = Instance.new("Frame")
+LoadingBarBg.Size = UDim2.new(0, 180, 0, 4)
+LoadingBarBg.Position = UDim2.new(0.5, -90, 1, -14)
+LoadingBarBg.BackgroundColor3 = Color3.fromRGB(45, 45, 54)
+LoadingBarBg.BorderSizePixel = 0
+LoadingBarBg.Parent = LoadingCard
+Instance.new("UICorner", LoadingBarBg).CornerRadius = UDim.new(1, 0)
+
+local LoadingBar = Instance.new("Frame")
+LoadingBar.Size = UDim2.new(0, 42, 0, 4)
+LoadingBar.BackgroundColor3 = Color3.fromRGB(126, 232, 255)
+LoadingBar.BorderSizePixel = 0
+LoadingBar.Parent = LoadingBarBg
+Instance.new("UICorner", LoadingBar).CornerRadius = UDim.new(1, 0)
+
+local loadingTween = TweenService:Create(LoadingBar, TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
+    Position = UDim2.new(1, -42, 0, 0)
+})
+loadingTween:Play()
+
+local closeLoadingOverlay = function()
+    pcall(function() loadingTween:Cancel() end)
+    pcall(function() LoadingGui:Destroy() end)
+end
+OnCleanup(closeLoadingOverlay)
+
 -- Drag + deteksi klik vs geser (dipakai floating button).
 -- Lepasan mouse dipantau lewat UserInputService.InputEnded GLOBAL, bukan lewat
 -- input.Changed milik InputObject: kalau mouse dilepas di luar window, Changed
 -- bisa nggak pernah fire dan tombol ke-lock "dragging" → klik di mana saja
 -- (termasuk di pet) jadi klik floating dan membuka menu.
-local function MakeDraggable(dragHandle, targetFrame, onClickCallback)
+local function MakeDraggable(dragHandle, targetFrame, onClickCallback, clampFn, onStopCallback)
     local dragging, dragStart, startPos, moved = false, nil, nil, 0
     local dragType = nil
     local endConn = nil
@@ -252,6 +355,7 @@ local function MakeDraggable(dragHandle, targetFrame, onClickCallback)
             endConn = nil
         end
         if fireClick and moved < 6 and onClickCallback then onClickCallback() end
+        if onStopCallback then onStopCallback() end
     end
 
     dragHandle.InputBegan:Connect(function(input)
@@ -278,10 +382,15 @@ local function MakeDraggable(dragHandle, targetFrame, onClickCallback)
             or input.UserInputType == Enum.UserInputType.Touch) then
             local delta = input.Position - dragStart
             moved = delta.Magnitude
-            targetFrame.Position = UDim2.new(
+            local newPos = UDim2.new(
                 startPos.X.Scale, startPos.X.Offset + delta.X,
                 startPos.Y.Scale, startPos.Y.Offset + delta.Y
             )
+            if clampFn then
+                local ok, clamped = pcall(function() return clampFn(newPos) end)
+                if ok and clamped then newPos = clamped end
+            end
+            targetFrame.Position = newPos
         end
     end)
 
@@ -325,6 +434,17 @@ local function AddButton(name, callback, group)
         Kind = "Button", Name = name, Callback = callback, Group = group or "Misc"
     }
 end
+
+-- Set nilai handle tanpa memicu callback (dipakai mutual-exclusion & config load).
+local function setUIValue(handle, value)
+    if not handle then return end
+    pcall(function()
+        if type(handle.Set) == "function" then handle:Set(value)
+        elseif type(handle.SetValue) == "function" then handle:SetValue(value)
+        elseif type(handle.Select) == "function" then handle:Select(value) end
+    end)
+end
+genv.LoopXCode_SetUIValue = setUIValue
 
 -- =====================================================================
 -- 1. AUTO STEAL ENGINE
@@ -400,15 +520,29 @@ local StealCfg = {
     Zone = "Any",               -- map/zone EXACT yang dipilih; Any = semua map
     CustomIncome = "",     -- min income: 5k / 30b / 50t / kosong = semua
     Priority = "Any",           -- tetap Any; fokus filter cuma Rarity + Min Income
-    ReelMode = "Safe"
+    ReelMode = "Safe",
+    WeakAllowed = false       -- Experimen: boleh tangkap walau lasso kurang kuat
 }
 genv.LoopXCode_StealCfg = StealCfg
 
+-- Auto Sell Pet: jual otomatis pet di bag yang tier-nya dipilih (multi-select).
+local SellCfg = {
+    Enabled = false,
+    Interval = 5,
+    Rarities = {}
+}
+genv.LoopXCode_SellCfg = SellCfg
+local R_SELL = RemoteFolder:FindFirstChild("SellPets")
+
 -- Ukuran HUD floating bisa diatur bebas dari menu Controls.
-local HudCfg = { Width = 720, Height = 108, TextSize = 18, Gap = 10, Shadow = 0.55, ShadowOffset = 2, Font = "Bold", LogoFont = "Logo" }
+local HudCfg = { Width = 720, Height = 108, TextSize = 18, Gap = 10, Shadow = 0.55, ShadowOffset = 2, Font = "Bold", LogoFont = "Logo", X = 0, Y = 0 }
 genv.LoopXCode_HudCfg = HudCfg
 local applyHudLayout = function() end
 genv.LoopXCode_ApplyHudLayout = function() applyHudLayout() end
+
+local MiscCfg = { MenuBackground = true, AutoEquipBestSpeed = true }
+genv.LoopXCode_MiscCfg = MiscCfg
+genv.LoopXCode_SetMenuBackground = function() end
 
 -- Live-reload bikin instance lama tetap hidup dengan StealCfg sendiri. Kalau
 -- nggak dimatikan semua, loop lamanya nyelak ke reel instance baru (kabur ke
@@ -454,22 +588,26 @@ local function bumpStealStat(key, amount)
 end
 
 local function stealStatsLine()
-    return string.format("Total %d | Done %d | Gagal %d | Weak %d",
-        tonumber(StealStats.Total) or 0, tonumber(StealStats.Done) or 0,
-        tonumber(StealStats.Failed) or 0, tonumber(StealStats.Weak) or 0)
+    return string.format("%s %d | %s %d | %s %d | %s %d",
+        tr("Total"), tonumber(StealStats.Total) or 0,
+        tr("Done"), tonumber(StealStats.Done) or 0,
+        tr("Failed"), tonumber(StealStats.Failed) or 0,
+        tr("Weak"), tonumber(StealStats.Weak) or 0)
 end
 
 local function stealStatsPanel()
-    local weakLine = "cukup kuat"
+    local weakLine = tr("strong enough")
     if (tonumber(StealStats.Weak) or 0) > 0 then
-        weakLine = "kurang kuat"
+        weakLine = tr("too weak")
         if StealStats.LastWeak ~= "" then
             weakLine = weakLine .. " — " .. tostring(StealStats.LastWeak)
         end
     end
-    return string.format("Total pet %d\nDone %d\nGagal %d\nLasso: %s",
-        tonumber(StealStats.Total) or 0, tonumber(StealStats.Done) or 0,
-        tonumber(StealStats.Failed) or 0, weakLine)
+    return string.format("%s %d\n%s %d\n%s %d\n%s: %s",
+        tr("Total pets"), tonumber(StealStats.Total) or 0,
+        tr("Done"), tonumber(StealStats.Done) or 0,
+        tr("Failed"), tonumber(StealStats.Failed) or 0,
+        tr("Lasso"), weakLine)
 end
 
 local function refreshStealStats()
@@ -611,6 +749,9 @@ local function normalizeText(s)
     return string.lower(tostring(s or ""):gsub("%s+", ""))
 end
 
+-- Dipakai pickTarget supaya target lemah bisa dilewati sebelum reel dicoba.
+local lassoTooWeak = function() return false end
+
 -- Filter: "Min Income" = income minimum. "Catch Rarity" = TIER EXACT.
 -- Daftar tier diambil langsung dari data game (PetConfig.TIERS
 -- + CaptureConfig.RARITY_NAMES). Pilih "Ethereal" => cuma tier Ethereal yang
@@ -661,7 +802,8 @@ local function pickTarget()
         if info
             and isUncaptured(model:GetAttribute("CapturedBy"))
             and model:GetAttribute("Despawning") ~= true
-            and matchesFilter(info) then
+            and matchesFilter(info)
+            and (StealCfg.WeakAllowed or not lassoTooWeak(info)) then
             local score = priorityScore(info, rootPart)
             if score > bestScore then bestScore, best = score, info end
         end
@@ -838,7 +980,7 @@ local function approachTarget(rootPart, targetInfo, maxSteps, stopDist)
 end
 
 -- Lasso terlalu lemah kalau power yang dibutuhkan pet > power player.
-local function lassoTooWeak(targetInfo)
+lassoTooWeak = function(targetInfo)
     if not targetInfo then return false end
     local required = 0
     pcall(function()
@@ -868,6 +1010,10 @@ end
 local function captureAllowed()
     return StealCfg.Enabled == true or ManualSteal.Active == true
 end
+
+-- Forward declarations: reel butuh state carry + safe zone tanpa dependency loop.
+local isCarrying = function() return false end
+local escapeToSafeZone = function() return false end
 
 local function reelDuration()
     -- Fast sekarang jauh lebih kenceng dari Safe (4s). Masih di atas batas
@@ -923,9 +1069,22 @@ local function reelCapture(session, targetInfo)
     end
 
     if active then
+        -- Kirim progress penuh dua kali dengan jeda kecil. Reel "nempel di
+        -- phone" biasanya terjadi karena server belum menerima pull terakhir
+        -- sebelum FinishCapture diproses.
         pcall(function() R_STEAL.CapturePull:FireServer(session, 1) end)
-        task.wait(0.05)
+        task.wait(isFastReel() and 0.06 or 0.12)
+        pcall(function() R_STEAL.CapturePull:FireServer(session, 1) end)
+        task.wait(isFastReel() and 0.06 or 0.12)
         pcall(function() R_STEAL.FinishCapture:FireServer(session, true, false) end)
+
+        -- Fast harus langsung keluar dari map begitu pet benar-benar di tangan.
+        -- Tunggu sinkronisasi Carrying sebentar, lalu heading ke safe zone.
+        for _ = 1, (isFastReel() and 12 or 8) do
+            if isCarrying() then break end
+            task.wait(0.05)
+        end
+        if isCarrying() then task.spawn(escapeToSafeZone) end
     else
         -- Auto Catch dimatikan di tengah reel: batalkan, jangan tinggalkan
         -- Capturing=true di server (nanti StartCapture selalu ditolak).
@@ -934,7 +1093,7 @@ local function reelCapture(session, targetInfo)
     return active
 end
 
-local function isCarrying()
+isCarrying = function()
     -- Capturing = reel masih jalan, BUKAN pet sudah di tangan. Kalau ini ikut
     -- dihitung, stealStep bisa kabur ke safe zone di tengah reel dan gagal.
     local carrying = LocalPlayer:GetAttribute("Carrying")
@@ -980,7 +1139,8 @@ local function secureCarry(rootPart)
     return false
 end
 
-local function escapeToSafeZone()
+local escapeRunning = false
+local function doEscapeToSafeZone()
     local char = LocalPlayer.Character
     local rootPart = char and char:FindFirstChild("HumanoidRootPart")
     if not rootPart then return false end
@@ -1008,6 +1168,17 @@ local function escapeToSafeZone()
     task.wait(0.3)
     if isCarrying() then secureCarry(rootPart) end
     return not isCarrying()
+end
+
+-- Satu deposit saja. Double trigger (dari reel + dari stealStep) sebelumnya
+-- bisa bikin dua jalur safe-zone jalan bareng dan bikin Fast terasa macet.
+escapeToSafeZone = function()
+    if escapeRunning then return false end
+    escapeRunning = true
+    local ok = false
+    pcall(function() ok = doEscapeToSafeZone() end)
+    escapeRunning = false
+    return ok
 end
 
 local function bagCount()
@@ -1052,7 +1223,7 @@ local function tryCaptureOnce(rootPart, target)
     if weak then
         bumpStealStat("Weak")
         StealStats.LastWeak = tostring(target.name or "?")
-        setStatus("on system", "lasso kurang kuat: " .. tostring(target.name or "?"))
+        setStatus("on system", tr("lasso too weak: ") .. tostring(target.name or "?"))
         refreshStealStats()
         -- Nudge kecil cuma untuk reel; navigasi tetap MoveTo.
         stickToPet(rootPart, target)
@@ -1209,7 +1380,7 @@ local function startManualSteal(petName)
             if weak then
                 bumpStealStat("Weak")
                 StealStats.LastWeak = tostring(target.name or "?")
-                setStatus("on system", "lasso kurang kuat: " .. tostring(target.name or "?"))
+                setStatus("on system", tr("lasso too weak: ") .. tostring(target.name or "?"))
                 refreshStealStats()
             end
 
@@ -1334,6 +1505,9 @@ end)
 -- Auto Steal OFF -> auto-equip tetap jalan, nggak ada yang di-dismount.
 local function applyAutoSteal(v)
     StealCfg.Enabled = (v == true)
+    if StealCfg.Enabled and genv.LoopXCode_HardenCfg.AutoTreadmill then
+        pcall(function() genv.LoopXCode_HardenToggle("AutoTreadmill", false) end)
+    end
     if StealCfg.Enabled then
         -- pastikan hewan ke-ride sebelum jalan (tanpa turun dari pet)
         if genv.LoopXCode_AutoEquipV2 then task.spawn(equipBestSpeed) end
@@ -1447,7 +1621,7 @@ local function addEspStyleInputs(section, category, label)
     section:Input({
         Title = label .. " ESP Color",
         Value = tostring(ESPConfig.Styles[category].Color),
-        Placeholder = "#38BDF8  atau  56,189,248",
+        Placeholder = "#38BDF8  or  56,189,248",
         Callback = function(v)
             setEspStyle(category, "Color", tostring(v))
         end
@@ -1455,7 +1629,7 @@ local function addEspStyleInputs(section, category, label)
     section:Input({
         Title = label .. " ESP Shadow",
         Value = tostring(ESPConfig.Styles[category].Shadow),
-        Placeholder = "0.55  (0 = mati, 1 = pekat)",
+        Placeholder = "0.55  (0 = off, 1 = solid)",
         Callback = function(v)
             setEspStyle(category, "Shadow", math.clamp(tonumber(v) or 0.55, 0, 1))
         end
@@ -1777,15 +1951,18 @@ OnCleanup(stopESP)
 -- =====================================================================
 -- 4. EXTENDED HACKS — remote tervalidasi, efek hanya untuk LocalPlayer
 -- =====================================================================
-local HardenCfg = {
+-- Scope terpisah supaya ratusan lokal di engine ini tidak memakan register
+-- chunk utama. State penting diekspor lewat genv untuk dipakai registry/UI.
+local function buildHarden()
+genv.LoopXCode_HardenCfg = {
     SaveHistory = true, SaveUI = true, SaveMenu = true,
     AutoClaimIndex = true, AutoUpgradeTraining = false, AutoUpgradeTreadmill = false, AutoTreadmill = false,
     AntiBan = true, GodMode = false, Fly = false, JumpInfinity = false,
     AntiKnockDown = true, Invisible = false, AntiRagdoll = true, AutoAntiSpeed = false,
-    AntiAFK = true
+    AntiAFK = true, AntiHit = false
 }
-if HardenCfg.AntiAFK == nil then HardenCfg.AntiAFK = true end
-genv.LoopXCode_HardenCfg = HardenCfg
+if genv.LoopXCode_HardenCfg.AntiAFK == nil then genv.LoopXCode_HardenCfg.AntiAFK = true end
+-- config exported above; no local alias needed
 genv.LoopXCode_HardenEpoch = (tonumber(genv.LoopXCode_HardenEpoch) or 0) + 1
 local HARDEN_EPOCH = genv.LoopXCode_HardenEpoch
 
@@ -1820,13 +1997,91 @@ local function setAntiAFK(enabled)
 end
 genv.LoopXCode_SetAntiAFK = setAntiAFK
 OnCleanup(function() setAntiAFK(false) end)
-setAntiAFK(HardenCfg.AntiAFK)
+setAntiAFK(genv.LoopXCode_HardenCfg.AntiAFK)
 
 local HardenHistory = {}
-local HardenAlive = function()
+genv.LoopXCode_HardenAlive = function()
     return HARDEN_EPOCH == genv.LoopXCode_HardenEpoch
         and (not STATE or type(STATE.alive) ~= "function" or STATE.alive())
 end
+-- alive checker exported above
+
+-- Anti Hit: guardian target diubah ke id bukan milik LocalPlayer supaya
+-- guardian/poseidon tidak masuk mode wake dan tidak mengejar. Set_Shake juga
+-- dimatikan supaya efek hit dari server tidak mengguncang layar.
+genv.LoopXCode_AntiHitState = { shakeOriginal = nil, cache = {} }
+genv.LoopXCode_PacifyGuardian = function(model)
+    if not model or not model.Parent then return end
+    local mine = LocalPlayer.UserId
+    local function isMine(v)
+        return v == mine or v == tostring(mine)
+    end
+    if isMine(model:GetAttribute("GTarget")) then
+        pcall(function()
+            model:SetAttribute("GTarget", 0)
+            model:SetAttribute("GState", "sleep")
+        end)
+    end
+    for _, key in ipairs({ "TargetUserId", "PetTarget", "AttackTarget", "ChaseTarget" }) do
+        if isMine(model:GetAttribute(key)) then
+            pcall(function() model:SetAttribute(key, 0) end)
+        end
+    end
+end
+
+genv.LoopXCode_CollectGuardians = function()
+    local found = {}
+    pcall(function()
+        for _, g in ipairs(CollectionService:GetTagged("Guardian")) do found[g] = true end
+    end)
+    for _, folderName in ipairs({ "Guardians", "PetsGame", "Pets", "Guards" }) do
+        local folder = Workspace:FindFirstChild(folderName)
+        if folder then
+            for _, o in ipairs(folder:GetDescendants()) do
+                local lower = string.lower(o.Name)
+                if string.find(lower, "guard", 1, true)
+                    or string.find(lower, "boss", 1, true)
+                    or o:GetAttribute("GTarget") ~= nil then
+                    found[o] = true
+                end
+            end
+        end
+    end
+    return found
+end
+
+task.spawn(function()
+    local nextScan = 0
+    while genv.LoopXCode_HardenAlive() do
+        if genv.LoopXCode_HardenCfg.AntiHit then
+            pcall(function() LocalPlayer:SetAttribute("Set_Shake", false) end)
+            local now = os.clock()
+            if now >= nextScan then
+                nextScan = now + 0.65
+                genv.LoopXCode_AntiHitState.cache = genv.LoopXCode_CollectGuardians()
+            end
+            for guardian in pairs(genv.LoopXCode_AntiHitState.cache) do
+                genv.LoopXCode_PacifyGuardian(guardian)
+            end
+        end
+        task.wait(0.12)
+    end
+end)
+
+pcall(function()
+    CollectionService:GetInstanceAddedSignal("Guardian"):Connect(function(g)
+        if genv.LoopXCode_HardenCfg.AntiHit then
+            task.spawn(function() task.wait(0.05) genv.LoopXCode_PacifyGuardian(g) end)
+        end
+    end)
+end)
+
+OnCleanup(function()
+    local state = genv.LoopXCode_AntiHitState
+    if state.shakeOriginal ~= nil then
+        pcall(function() LocalPlayer:SetAttribute("Set_Shake", state.shakeOriginal) end)
+    end
+end)
 
 local R_INDEX = RemoteFolder:FindFirstChild("IndexAction")
 local R_FREE = RemoteFolder:FindFirstChild("FreeReward")
@@ -1853,26 +2108,87 @@ local function hFire(remote, ...)
     end)
 end
 
-local HardenSaveSettings = function()
+do
+    -- Auto Sell Pet: jual semua pet yang tier-nya dicentang. Remote yang dipakai
+    -- persis sama dengan tombol SELL di game: SellPets("list") lalu ("sell", ids).
+    genv.LoopXCode_NormalizeSellRarities = function(value)
+        local out = {}
+        if type(value) == "table" then
+            for _, v in pairs(value) do
+                local name = (type(v) == "table" and (v.Title or v.Value or v.Name)) or v
+                if name ~= nil and tostring(name) ~= "" then out[tostring(name)] = true end
+            end
+        elseif value ~= nil and tostring(value) ~= "" then
+            out[tostring(value)] = true
+        end
+        return out
+    end
+
+    local function petSellTier(pet)
+        local cfg = petCfg(pet and pet.Name)
+        local tier = nil
+        pcall(function() if cfg then tier = PC.GetTier(cfg) end end)
+        return tostring(tier or (pet and pet.Tier) or (pet and pet.Rarity) or "Common")
+    end
+
+    genv.LoopXCode_SellPetsNow = function()
+        if not R_SELL or SellCfg.Busy then return 0 end
+        local selected = genv.LoopXCode_NormalizeSellRarities(SellCfg.Rarities)
+        if not next(selected) then return 0 end
+
+        local okList, list = pcall(function() return R_SELL:InvokeServer("list") end)
+        if not okList or type(list) ~= "table" then return 0 end
+
+        local ids = {}
+        for _, pet in ipairs(list) do
+            local tier = petSellTier(pet)
+            if selected[tier]
+                or selected[tostring(pet.Tier)]
+                or selected[tostring(pet.Rarity)] then
+                ids[#ids + 1] = pet.Id
+            end
+        end
+        if #ids == 0 then return 0 end
+
+        SellCfg.Busy = true
+        local okSell, result = pcall(function() return R_SELL:InvokeServer("sell", ids) end)
+        SellCfg.Busy = false
+        if okSell and type(result) == "table" and result.ok then
+            setStatus(tr("auto sell"), tostring(#ids) .. " " .. tr("pets"))
+            return #ids
+        end
+        return 0
+    end
+
+    task.spawn(function()
+        while alive() do
+            if SellCfg.Enabled then pcall(function() genv.LoopXCode_SellPetsNow() end) end
+            task.wait(math.max(1, tonumber(SellCfg.Interval) or 5))
+        end
+    end)
+end
+
+genv.LoopXCode_HardenSave = function()
     local ok, str = pcall(function()
         return HttpService:JSONEncode({
-            AutoClaimIndex = HardenCfg.AutoClaimIndex,
-            AutoUpgradeTraining = HardenCfg.AutoUpgradeTraining,
-            AutoUpgradeTreadmill = HardenCfg.AutoUpgradeTreadmill,
-            AutoTreadmill = HardenCfg.AutoTreadmill,
-            AntiBan = HardenCfg.AntiBan, GodMode = HardenCfg.GodMode,
-            Fly = HardenCfg.Fly, JumpInfinity = HardenCfg.JumpInfinity,
-            AntiKnockDown = HardenCfg.AntiKnockDown, Invisible = HardenCfg.Invisible,
-            AntiRagdoll = HardenCfg.AntiRagdoll, AutoAntiSpeed = HardenCfg.AutoAntiSpeed
+            AutoClaimIndex = genv.LoopXCode_HardenCfg.AutoClaimIndex,
+            AutoUpgradeTraining = genv.LoopXCode_HardenCfg.AutoUpgradeTraining,
+            AutoUpgradeTreadmill = genv.LoopXCode_HardenCfg.AutoUpgradeTreadmill,
+            AutoTreadmill = genv.LoopXCode_HardenCfg.AutoTreadmill,
+            AntiBan = genv.LoopXCode_HardenCfg.AntiBan, GodMode = genv.LoopXCode_HardenCfg.GodMode,
+            Fly = genv.LoopXCode_HardenCfg.Fly, JumpInfinity = genv.LoopXCode_HardenCfg.JumpInfinity,
+            AntiKnockDown = genv.LoopXCode_HardenCfg.AntiKnockDown, Invisible = genv.LoopXCode_HardenCfg.Invisible,
+            AntiRagdoll = genv.LoopXCode_HardenCfg.AntiRagdoll, AutoAntiSpeed = genv.LoopXCode_HardenCfg.AutoAntiSpeed,
+            AntiAFK = genv.LoopXCode_HardenCfg.AntiAFK, AntiHit = genv.LoopXCode_HardenCfg.AntiHit
         })
     end)
-    if HardenCfg.SaveHistory and ok and type(str) == "string" then
+    if genv.LoopXCode_HardenCfg.SaveHistory and ok and type(str) == "string" then
         HardenHistory[#HardenHistory + 1] = string.format("%s %s", os.date("%Y-%m-%d %H:%M:%S"), str)
         if #HardenHistory > 20 then table.remove(HardenHistory, 1) end
         pcall(function() ReplicatedStorage:SetAttribute("LoopXCodeExtendedCfg", str) end)
     end
 end
-genv.LoopXCode_HardenSave = HardenSaveSettings
+-- settings save exported above
 
 -- Auto Claim Index: tombol "CLAIM ALL" tetap dilacak di PlayerGui supaya
 -- hub tahu kalau UI Index tersedia, lalu jalur yang dipakai tombol itu
@@ -1907,7 +2223,7 @@ end
 local lastIndexClaim = 0
 local lastMiniClaim = 0
 local HardenClaimIndex = function()
-    if not HardenCfg.AutoClaimIndex then return end
+    if not genv.LoopXCode_HardenCfg.AutoClaimIndex then return end
     local now = os.clock()
 
     if now - lastIndexClaim >= 1.5 then
@@ -1974,7 +2290,7 @@ local function getTrainPadDeck()
 end
 
 local function teleportToTreadmill()
-    if not HardenCfg.AutoTreadmill then return false end
+    if not genv.LoopXCode_HardenCfg.AutoTreadmill then return false end
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     local deck = getTrainPadDeck()
@@ -2035,7 +2351,7 @@ end
 local function startTapListener()
     stopTapListener()
     tapListenerConn = RunService.Heartbeat:Connect(function()
-        if not HardenAlive() or not HardenCfg.AutoTreadmill then return end
+        if not genv.LoopXCode_HardenAlive() or not genv.LoopXCode_HardenCfg.AutoTreadmill then return end
         if LocalPlayer:GetAttribute("Training") ~= true then return end
         if (tonumber(LocalPlayer:GetAttribute("TutorialStep") or 0) or 0) ~= 0 then return end
         local id = LocalPlayer:GetAttribute("TrainTapId")
@@ -2049,7 +2365,7 @@ local function startTapListener()
 end
 
 local HardenAutoTap = function()
-    if not HardenCfg.AutoTreadmill or not R_TRAIN then
+    if not genv.LoopXCode_HardenCfg.AutoTreadmill or not R_TRAIN then
         lastTapId, pendingTapId = nil, nil
         return
     end
@@ -2092,34 +2408,36 @@ local HardenAutoTap = function()
     end
 end
 
--- Auto Upgrade / Auto Upgrade Treadmill: default OFF; kalau ON pakai argumen
--- "sign" yang dipakai BaseSigns/PetPanel game (bukan fireclickdetector buta).
-local lastUpgradePen = 0
-local lastUpgradeDummy = 0
-local HardenUpgradeTraining = function()
-    local now = os.clock()
-    local did = false
-    if HardenCfg.AutoUpgradeTraining and now - lastUpgradePen >= 1.5 then
-        lastUpgradePen = now
-        hInvoke(R_UP_PEN, "sign")
-        did = true
+do
+    -- Auto Upgrade / Auto Upgrade Treadmill: default OFF; kalau ON pakai argumen
+    -- "sign" yang dipakai BaseSigns/PetPanel game (bukan fireclickdetector buta).
+    local lastUpgradePen = 0
+    local lastUpgradeDummy = 0
+    local function HardenUpgradeTraining()
+        local now = os.clock()
+        local did = false
+        if genv.LoopXCode_HardenCfg.AutoUpgradeTraining and now - lastUpgradePen >= 1.5 then
+            lastUpgradePen = now
+            hInvoke(R_UP_PEN, "sign")
+            did = true
+        end
+        if genv.LoopXCode_HardenCfg.AutoUpgradeTreadmill and now - lastUpgradeDummy >= 1.5 then
+            lastUpgradeDummy = now
+            hInvoke(R_UP_DUMMY, "sign")
+            did = true
+        end
+        if did then setStatus("auto upgrade", "sign") end
     end
-    if HardenCfg.AutoUpgradeTreadmill and now - lastUpgradeDummy >= 1.5 then
-        lastUpgradeDummy = now
-        hInvoke(R_UP_DUMMY, "sign")
-        did = true
-    end
-    if did then setStatus("auto upgrade", "sign") end
-end
 
-task.spawn(function()
-    while HardenAlive() do
-        HardenClaimIndex()
-        HardenAutoTap()
-        HardenUpgradeTraining()
-        task.wait(0.12 + math.random() * 0.06)
-    end
-end)
+    task.spawn(function()
+        while genv.LoopXCode_HardenAlive() do
+            HardenClaimIndex()
+            HardenAutoTap()
+            HardenUpgradeTraining()
+            task.wait(0.12 + math.random() * 0.06)
+        end
+    end)
+end
 
 -- ---------- snapshot / restore (hanya LocalPlayer) ----------
 local HardenRestore = {}
@@ -2192,7 +2510,7 @@ local HardenRestoreStats = function(key, stats)
         end
     end
     if key == "AntiRagdoll" or key == "AntiKnockDown" then
-        if not HardenCfg.AntiRagdoll and not HardenCfg.AntiKnockDown and statesDisabled then
+        if not genv.LoopXCode_HardenCfg.AntiRagdoll and not genv.LoopXCode_HardenCfg.AntiKnockDown and statesDisabled then
             setHumanoidStates(true)
         end
     end
@@ -2200,35 +2518,59 @@ local HardenRestoreStats = function(key, stats)
 end
 
 genv.LoopXCode_HardenToggle = function(key, v)
-    if HardenCfg[key] == nil then return end
+    if genv.LoopXCode_HardenCfg[key] == nil then return end
+    if key == "AntiHit" then
+        local enabled = (v == true)
+        local state = genv.LoopXCode_AntiHitState
+        if enabled and state.shakeOriginal == nil then
+            state.shakeOriginal = LocalPlayer:GetAttribute("Set_Shake")
+        end
+        genv.LoopXCode_HardenCfg.AntiHit = enabled
+        if enabled then
+            pcall(function() LocalPlayer:SetAttribute("Set_Shake", false) end)
+            for guardian in pairs(state.cache) do genv.LoopXCode_PacifyGuardian(guardian) end
+        elseif state.shakeOriginal ~= nil then
+            pcall(function() LocalPlayer:SetAttribute("Set_Shake", state.shakeOriginal) end)
+            state.shakeOriginal = nil
+        end
+        pcall(genv.LoopXCode_HardenSave)
+        return
+    end
     if key == "AntiAFK" then
-        HardenCfg[key] = (v == true)
-        setAntiAFK(HardenCfg[key])
-        pcall(HardenSaveSettings)
+        genv.LoopXCode_HardenCfg[key] = (v == true)
+        setAntiAFK(genv.LoopXCode_HardenCfg[key])
+        pcall(genv.LoopXCode_HardenSave)
         return
     end
     if key == "AutoUpgradeTraining" or key == "AutoUpgradeTreadmill" then
-        HardenCfg[key] = (v == true)
-        if HardenCfg[key] then
+        genv.LoopXCode_HardenCfg[key] = (v == true)
+        if genv.LoopXCode_HardenCfg[key] then
             setStatus("auto upgrade", "sign")
         elseif not StealCfg.Enabled and not ManualSteal.Active then
             setStatus("idle", "any detect")
         end
-        pcall(HardenSaveSettings)
+        pcall(genv.LoopXCode_HardenSave)
         return
     end
     if v and not HardenRestore[key] then
         HardenRestore[key] = HardenCaptureStats()
     end
-    HardenCfg[key] = v
+    genv.LoopXCode_HardenCfg[key] = v
     if not v and HardenRestore[key] then
         HardenRestoreStats(key, HardenRestore[key])
         HardenRestore[key] = nil
     end
-    pcall(HardenSaveSettings)
+    pcall(genv.LoopXCode_HardenSave)
 
     -- Auto Treadmill dan auto naik pet saling eksklusif.
     if key == "AutoTreadmill" then
+        if v and (StealCfg.Enabled or ManualSteal.Active) then
+            -- Auto Treadmill kalah kalau Auto Catch/Steal nyala.
+            genv.LoopXCode_HardenCfg.AutoTreadmill = false
+            setUIValue(UIHandles["Auto Treadmill"], false)
+            pcall(genv.LoopXCode_HardenSave)
+            return
+        end
         if v then
             if genv.LoopXCode_AutoEquipBeforeTreadmill == nil then
                 genv.LoopXCode_AutoEquipBeforeTreadmill = (genv.LoopXCode_AutoEquipV2 == true)
@@ -2274,7 +2616,7 @@ end
 local function startFly()
     if flyConn then return end
     flyConn = RunService.Heartbeat:Connect(function()
-        if not HardenAlive() or not HardenCfg.Fly then
+        if not genv.LoopXCode_HardenAlive() or not genv.LoopXCode_HardenCfg.Fly then
             stopFly()
             return
         end
@@ -2311,9 +2653,9 @@ end
 
 -- ---------- Jump infinity: tiap tekan Space makin tinggi ----------
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if not HardenAlive() or gameProcessed then return end
+    if not genv.LoopXCode_HardenAlive() or gameProcessed then return end
     if input.KeyCode ~= Enum.KeyCode.Space then return end
-    if not HardenCfg.JumpInfinity or HardenCfg.Fly then return end
+    if not genv.LoopXCode_HardenCfg.JumpInfinity or genv.LoopXCode_HardenCfg.Fly then return end
     local hum = currentHumanoid()
     if not hum then return end
     jumpLevel += 1
@@ -2326,16 +2668,16 @@ end)
 
 -- ---------- loop efek perk frame ----------
 task.spawn(function()
-    while HardenAlive() do
+    while genv.LoopXCode_HardenAlive() do
         task.wait(0.08)
 
-        if HardenCfg.Fly then startFly() else stopFly() end
+        if genv.LoopXCode_HardenCfg.Fly then startFly() else stopFly() end
 
         local hum = currentHumanoid()
         local char = LocalPlayer.Character
 
         -- God Mode: hanya LocalPlayer, health dijaga tetap penuh.
-        if HardenCfg.GodMode and hum then
+        if genv.LoopXCode_HardenCfg.GodMode and hum then
             pcall(function()
                 hum.MaxHealth = 1e6
                 if hum.Health < 1e6 then hum.Health = 1e6 end
@@ -2347,7 +2689,7 @@ task.spawn(function()
 
         -- Anti Knock Down + Anti Ragdoll: matikan state jatuh/ragdoll,
         -- batalkan launch GuardianHit, JANGAN anchor bagian tubuh.
-        if HardenCfg.AntiKnockDown or HardenCfg.AntiRagdoll then
+        if genv.LoopXCode_HardenCfg.AntiKnockDown or genv.LoopXCode_HardenCfg.AntiRagdoll then
             if hum and not statesDisabled then setHumanoidStates(false) end
             if hum then
                 pcall(function()
@@ -2360,7 +2702,7 @@ task.spawn(function()
                     hum.PlatformStand = false
                 end)
             end
-            if HardenCfg.AntiKnockDown and char then
+            if genv.LoopXCode_HardenCfg.AntiKnockDown and char then
                 local root = char:FindFirstChild("HumanoidRootPart")
                 if root then
                     local v = root.AssemblyLinearVelocity
@@ -2371,7 +2713,7 @@ task.spawn(function()
                     end
                 end
             end
-            if HardenCfg.AntiRagdoll and char and not HardenCfg.Fly then
+            if genv.LoopXCode_HardenCfg.AntiRagdoll and char and not genv.LoopXCode_HardenCfg.Fly then
                 for _, part in ipairs(char:GetDescendants()) do
                     if part:IsA("BasePart") and part.Anchored then
                         pcall(function() part.Anchored = false end)
@@ -2383,7 +2725,7 @@ task.spawn(function()
         end
 
         -- Invisible: sempart, aksesoris, highlight dan billboard ikut hilang.
-        if HardenCfg.Invisible and char then
+        if genv.LoopXCode_HardenCfg.Invisible and char then
             for _, obj in ipairs(char:GetDescendants()) do
                 if obj:IsA("BasePart") then
                     if obj.Transparency < 1 then obj.Transparency = 1 end
@@ -2395,7 +2737,7 @@ task.spawn(function()
 
         -- Anti Ban: jangan kirim remote cacat, jangan pakai math.huge, dan
         -- jaga status offline tetap wajar. Remote hygiene ada di hInvoke/hFire.
-        if HardenCfg.AntiBan then
+        if genv.LoopXCode_HardenCfg.AntiBan then
             if LocalPlayer:GetAttribute("OfflineBoosted") ~= true then
                 pcall(function() LocalPlayer:SetAttribute("OfflineBoosted", true) end)
             end
@@ -2412,7 +2754,7 @@ task.spawn(function()
         end
 
         -- Auto Anti Speed: reset ke kecepatan normal (bukan math.huge).
-        if HardenCfg.AutoAntiSpeed and hum and not HardenCfg.Fly then
+        if genv.LoopXCode_HardenCfg.AutoAntiSpeed and hum and not genv.LoopXCode_HardenCfg.Fly then
             pcall(function()
                 local saved = HardenRestore.AutoAntiSpeed
                 hum.WalkSpeed = saved and saved.walk or 16
@@ -2422,13 +2764,15 @@ task.spawn(function()
 end)
 
 LocalPlayer.CharacterAdded:Connect(function()
-    if not HardenAlive() then return end
+    if not genv.LoopXCode_HardenAlive() then return end
     task.wait(0.4)
     for key in pairs(HardenRestore) do
         HardenRestore[key] = HardenCaptureStats()
     end
     jumpLevel = 0
 end)
+end
+buildHarden()
 
 -- =====================================================================
 -- 5. DAFTARKAN SEMUA KOMPONEN KE REGISTRY
@@ -2449,49 +2793,38 @@ AddDropdown("ESP Range", { "All", "300 studs", "800 studs", "1500 studs" }, "All
     end
 end, "ESP")
 
-local HardenFeatureKeys = {
-    "AutoClaimIndex", "AutoUpgradeTraining", "AutoUpgradeTreadmill", "AutoTreadmill",
-    "AntiBan", "AntiAFK", "GodMode", "Fly", "JumpInfinity", "AntiKnockDown",
-    "Invisible", "AntiRagdoll", "AutoAntiSpeed"
-}
-local HardenFeatureLabels = {
-    AutoClaimIndex = "Auto Claim Index", AutoUpgradeTraining = "Auto Upgrade",
-    AutoUpgradeTreadmill = "Auto Upgrade Treadmill", AutoTreadmill = "Auto Treadmill",
-    AntiBan = "Anti Ban", AntiAFK = "Anti AFK", GodMode = "God Mode",
-    Fly = "Fly", JumpInfinity = "Jump Infinity", AntiKnockDown = "Anti Knock Down",
-    Invisible = "Invisible", AntiRagdoll = "Anti Ragdoll", AutoAntiSpeed = "Auto Anti Speed"
-}
-local HardenFeatureDescs = {
-    AutoClaimIndex = "Claim all index rewards + remaining pets + free reward",
-    AutoUpgradeTraining = "Auto upgrade pen via valid 'sign' remote (off by default)",
-    AutoUpgradeTreadmill = "Auto upgrade treadmill via valid 'sign' remote (click to toggle)",
-    AutoTreadmill = "Auto-taps TAP! via TrainTapId; turns Auto Equip Best Speed off",
-    AntiBan = "Valid remotes, paced calls, no invalid attribute/remote spam",
-    AntiAFK = "Virtual idle input; character and mount untouched",
-    GodMode = "Keeps LocalPlayer health full",
-    Fly = "WASD + Space/Shift flight",
-    JumpInfinity = "Each Space press jumps higher",
-    AntiKnockDown = "Blocks FallingDown and guardian knockback launch",
-    Invisible = "Hides every body part, accessory and overlay",
-    AntiRagdoll = "Blocks ragdoll states without anchoring the character",
-    AutoAntiSpeed = "Resets WalkSpeed to normal instead of infinite"
-}
-
-for _, key in ipairs(HardenFeatureKeys) do
-    AddToggle(HardenFeatureLabels[key], HardenCfg[key] ~= false, function(v)
-        genv.LoopXCode_HardenToggle(key, v)
-    end, "Features")
+do
+    local keys = {
+        "AutoClaimIndex", "AutoUpgradeTraining", "AutoUpgradeTreadmill", "AutoTreadmill",
+        "AntiBan", "AntiAFK", "GodMode", "Fly", "JumpInfinity", "AntiKnockDown",
+        "Invisible", "AntiRagdoll", "AutoAntiSpeed", "AntiHit"
+    }
+    genv.LoopXCode_HardenFeatureKeys = keys
+    local labels = {
+        AutoClaimIndex = "Auto Claim Index", AutoUpgradeTraining = "Auto Upgrade",
+        AutoUpgradeTreadmill = "Auto Upgrade Treadmill", AutoTreadmill = "Auto Treadmill",
+        AntiBan = "Anti Ban", AntiAFK = "Anti AFK", GodMode = "God Mode",
+        Fly = "Fly", JumpInfinity = "Jump Infinity", AntiKnockDown = "Anti Knock Down",
+        Invisible = "Invisible", AntiRagdoll = "Anti Ragdoll", AutoAntiSpeed = "Auto Anti Speed",
+        AntiHit = "Anti Hit"
+    }
+    genv.LoopXCode_HardenFeatureLabels = labels
+    for _, key in ipairs(keys) do
+        AddToggle(labels[key], genv.LoopXCode_HardenCfg[key] ~= false, function(v)
+            genv.LoopXCode_HardenToggle(key, v)
+        end, "Features")
+    end
 end
 
-AddToggle("Save History", HardenCfg.SaveHistory ~= false, function(v)
-    HardenCfg.SaveHistory = v
+AddToggle("Save History", genv.LoopXCode_HardenCfg.SaveHistory ~= false, function(v)
+    genv.LoopXCode_HardenCfg.SaveHistory = v
 end, "Misc")
-AddToggle("Save UI", true, function(v) HardenCfg.SaveUI = v end, "Misc")
-AddToggle("Save Menu", true, function(v) HardenCfg.SaveMenu = v end, "Misc")
+AddToggle("Save UI", true, function(v) genv.LoopXCode_HardenCfg.SaveUI = v end, "Misc")
+AddToggle("Save Menu", true, function(v) genv.LoopXCode_HardenCfg.SaveMenu = v end, "Misc")
 AddButton("Export Config", function()
-    pcall(HardenSaveSettings)
+    pcall(genv.LoopXCode_HardenSave)
     local ok, enc = pcall(function()
-        return HttpService:JSONEncode({ StealCfg = StealCfg, HardenCfg = HardenCfg, ESPConfig = ESPConfig })
+        return HttpService:JSONEncode({ StealCfg = StealCfg, HardenCfg = genv.LoopXCode_HardenCfg, ESPConfig = ESPConfig })
     end)
     if ok then pcall(function() setclipboard(enc) end) end
 end, "Misc")
@@ -2516,18 +2849,23 @@ local function saveNamedConfig(name)
     name = tostring(name or "")
     if name == "" then name = "default" end
     local harden = {}
-    for _, key in ipairs(HardenFeatureKeys) do harden[key] = HardenCfg[key] end
-    harden.SaveHistory = HardenCfg.SaveHistory
-    harden.SaveUI = HardenCfg.SaveUI
-    harden.SaveMenu = HardenCfg.SaveMenu
+    for _, key in ipairs(genv.LoopXCode_HardenFeatureKeys) do harden[key] = genv.LoopXCode_HardenCfg[key] end
+    harden.SaveHistory = genv.LoopXCode_HardenCfg.SaveHistory
+    harden.SaveUI = genv.LoopXCode_HardenCfg.SaveUI
+    harden.SaveMenu = genv.LoopXCode_HardenCfg.SaveMenu
 
     local payload = {
         StealCfg = {
             Enabled = StealCfg.Enabled, RetryDelay = StealCfg.RetryDelay,
             Rarity = StealCfg.Rarity, Zone = StealCfg.Zone,
             CustomIncome = StealCfg.CustomIncome, Priority = StealCfg.Priority,
-            ReelMode = StealCfg.ReelMode
+            ReelMode = StealCfg.ReelMode, WeakAllowed = StealCfg.WeakAllowed
         },
+        SellCfg = {
+            Enabled = SellCfg.Enabled, Interval = SellCfg.Interval,
+            Rarities = jsonSafe(SellCfg.Rarities)
+        },
+        MiscCfg = jsonSafe(MiscCfg),
         HudCfg = jsonSafe(HudCfg),
         ESPConfig = jsonSafe(ESPConfig),
         HardenCfg = harden,
@@ -2546,19 +2884,13 @@ local function saveNamedConfig(name)
     local ok = pcall(function()
         ReplicatedStorage:SetAttribute(CONFIG_BANK_ATTR, HttpService:JSONEncode(bank))
     end)
-    pcall(HardenSaveSettings)
+    pcall(genv.LoopXCode_HardenSave)
     return ok
 end
 genv.LoopXCode_SaveConfig = saveNamedConfig
 
 local function setHandleValue(handle, value)
-    if not handle then return end
-    pcall(function()
-        if type(handle.Set) == "function" then handle:Set(value)
-        elseif type(handle.SetValue) == "function" then handle:SetValue(value)
-        elseif type(handle.Select) == "function" then handle:Select(value)
-        end
-    end)
+    setUIValue(handle, value)
 end
 
 local function loadNamedConfig(name)
@@ -2567,7 +2899,6 @@ local function loadNamedConfig(name)
     local bank = readConfigBank()
     local data = bank[name]
     if type(data) ~= "table" then return false end
-
     ConfigCfg.Name = tostring(data.ConfigName or name)
     setHandleValue(UIHandles["Config Name"], ConfigCfg.Name)
 
@@ -2577,10 +2908,27 @@ local function loadNamedConfig(name)
     end
     if tonumber(s.RetryDelay) then StealCfg.RetryDelay = tonumber(s.RetryDelay) end
     StealCfg.Enabled = s.Enabled == true
+    StealCfg.WeakAllowed = s.WeakAllowed == true
     StealCfg.Busy = false
 
+    local sell = type(data.SellCfg) == "table" and data.SellCfg or {}
+    SellCfg.Enabled = sell.Enabled == true
+    if tonumber(sell.Interval) then SellCfg.Interval = math.max(1, tonumber(sell.Interval)) end
+    SellCfg.Rarities = {}
+    for r in pairs(genv.LoopXCode_NormalizeSellRarities(sell.Rarities)) do
+        if type(r) == "string" then SellCfg.Rarities[#SellCfg.Rarities + 1] = r end
+    end
+    table.sort(SellCfg.Rarities)
+    pcall(function() setHandleValue(UIHandles["Sell Rarities"], SellCfg.Rarities) end)
+
+    local misc = type(data.MiscCfg) == "table" and data.MiscCfg or {}
+    MiscCfg.MenuBackground = misc.MenuBackground ~= false
+    MiscCfg.AutoEquipBestSpeed = misc.AutoEquipBestSpeed ~= false
+    pcall(function() genv.LoopXCode_SetMenuBackground(MiscCfg.MenuBackground) end)
+    pcall(function() genv.LoopXCode_SetAutoEquip(MiscCfg.AutoEquipBestSpeed, false) end)
+
     local h = type(data.HudCfg) == "table" and data.HudCfg or {}
-    for _, key in ipairs({ "Width", "Height", "TextSize", "Gap", "Shadow", "ShadowOffset", "Font", "LogoFont" }) do
+    for _, key in ipairs({ "Width", "Height", "TextSize", "Gap", "Shadow", "ShadowOffset", "Font", "LogoFont", "X", "Y" }) do
         if h[key] ~= nil then HudCfg[key] = h[key] end
     end
 
@@ -2604,15 +2952,15 @@ local function loadNamedConfig(name)
     end
 
     local hd = type(data.HardenCfg) == "table" and data.HardenCfg or {}
-    for _, key in ipairs(HardenFeatureKeys) do
+    for _, key in ipairs(genv.LoopXCode_HardenFeatureKeys) do
         if hd[key] ~= nil then
-            HardenCfg[key] = hd[key] == true
-            pcall(function() genv.LoopXCode_HardenToggle(key, HardenCfg[key]) end)
-            setHandleValue(UIHandles["Harden:" .. key], HardenCfg[key])
+            genv.LoopXCode_HardenCfg[key] = hd[key] == true
+            pcall(function() genv.LoopXCode_HardenToggle(key, genv.LoopXCode_HardenCfg[key]) end)
+            setHandleValue(UIHandles["Harden:" .. key], genv.LoopXCode_HardenCfg[key])
         end
     end
     for _, key in ipairs({ "SaveHistory", "SaveUI", "SaveMenu" }) do
-        if hd[key] ~= nil then HardenCfg[key] = hd[key] == true end
+        if hd[key] ~= nil then genv.LoopXCode_HardenCfg[key] = hd[key] == true end
     end
 
     if type(data.LangCfg) == "table" and data.LangCfg.Language then
@@ -2625,6 +2973,11 @@ local function loadNamedConfig(name)
     setHandleValue(UIHandles["Catch Rarity (tier)"], StealCfg.Rarity)
     setHandleValue(UIHandles["Catch Zone"], StealCfg.Zone)
     setHandleValue(UIHandles["Min Income"], StealCfg.CustomIncome)
+    setHandleValue(UIHandles["Weak Lasso Catch"], StealCfg.WeakAllowed)
+    setHandleValue(UIHandles["Auto Equip Best Speed"], MiscCfg.AutoEquipBestSpeed)
+    setHandleValue(UIHandles["Auto Sell Pet"], SellCfg.Enabled)
+    setHandleValue(UIHandles["Sell Interval"], tostring(SellCfg.Interval))
+    setHandleValue(UIHandles["Menu Background"], MiscCfg.MenuBackground)
     setHandleValue(UIHandles["HUD Width"], tostring(HudCfg.Width))
     setHandleValue(UIHandles["HUD Height"], tostring(HudCfg.Height))
     setHandleValue(UIHandles["HUD Text Size"], tostring(HudCfg.TextSize))
@@ -2637,8 +2990,8 @@ local function loadNamedConfig(name)
     for _, item in ipairs({
         { "Pet ESP", ESPConfig.ESPPets }, { "Guardian ESP", ESPConfig.ESPGuards },
         { "Player ESP", ESPConfig.ESPPlayers }, { "ESP Info", ESPConfig.ShowInfo },
-        { "Save History", HardenCfg.SaveHistory }, { "Save UI", HardenCfg.SaveUI },
-        { "Save Menu", HardenCfg.SaveMenu }
+        { "Save History", genv.LoopXCode_HardenCfg.SaveHistory }, { "Save UI", genv.LoopXCode_HardenCfg.SaveUI },
+        { "Save Menu", genv.LoopXCode_HardenCfg.SaveMenu }
     }) do setHandleValue(UIHandles[item[1]], item[2]) end
 
     pcall(function() genv.LoopXCode_ApplyAutoSteal(StealCfg.Enabled) end)
@@ -2646,7 +2999,7 @@ local function loadNamedConfig(name)
     pcall(function() genv.LoopXCode_ApplyLanguage() end)
     pcall(function() genv.LoopXCode_ReapplyFonts() end)
     task.spawn(function() pcall(function() genv.LoopXCode_RefreshFinder() end) end)
-    pcall(HardenSaveSettings)
+    pcall(genv.LoopXCode_HardenSave)
     return true
 end
 genv.LoopXCode_LoadConfig = loadNamedConfig
@@ -2671,6 +3024,7 @@ local function buildWindUI()
     end)
 
     if not (okLib and type(lib) == "table" and type(lib.CreateWindow) == "function") then
+        closeLoadingOverlay()
         return
     end
 
@@ -2824,6 +3178,40 @@ local function buildWindUI()
     genv.LoopXCode_ReapplyFonts = reapplyFonts
     reapplyFonts()
 
+    -- WindUI dropdown default hitam. Samakan dengan wallpaper menu dan batasi
+    -- tinggi list (terutama di phone) supaya 18 rarity nggak keluar layar.
+    local function styleDropdown(dropdown)
+        local ui = (type(dropdown) == "table") and dropdown.UIElements or nil
+        if type(ui) ~= "table" then return end
+        local cap = UserInputService.TouchEnabled and 220 or 300
+        pcall(function()
+            if typeof(ui.Menu) == "Instance" then
+                ui.Menu.ImageColor3 = Color3.fromRGB(18, 22, 34)
+                ui.Menu.ImageTransparency = 0.02
+            end
+            if typeof(ui.MenuCanvas) == "Instance" then
+                for _, o in ipairs(ui.MenuCanvas:GetDescendants()) do
+                    if o:IsA("UISizeConstraint") then
+                        o.MaxSize = Vector2.new(math.huge, cap)
+                    elseif o:IsA("ScrollingFrame") then
+                        o.BackgroundTransparency = 1
+                    elseif o:IsA("ImageButton") then
+                        o.ImageColor3 = Color3.fromRGB(30, 34, 50)
+                    end
+                end
+            end
+        end)
+    end
+    genv.LoopXCode_StyleDropdown = styleDropdown
+    local function styleAllDropdowns()
+        for _, handle in pairs(UIHandles) do
+            if type(handle) == "table" and handle.__type == "Dropdown" then
+                styleDropdown(handle)
+            end
+        end
+    end
+    genv.LoopXCode_StyleAllDropdowns = styleAllDropdowns
+
     -- ---------- Menu wallpaper: gradient + pattern, NO external asset ----------
     -- WindUI pakai ZIndexBehavior = Sibling, jadi urutan anak yang menentukan
     -- mana yang dilukis di depan. Wallpaper dipasang SEBAGAI ANAK Background
@@ -2910,6 +3298,10 @@ local function buildWindUI()
 
     menuBgController = installMenuBackground(UIWindow)
     genv.LoopXCode_MenuBackground = menuBgController
+    genv.LoopXCode_SetMenuBackground = function(v)
+        if menuBgController then pcall(function() menuBgController:SetEnabled(v == true) end) end
+        MiscCfg.MenuBackground = (v == true)
+    end
 
     -- WindUI animasi fullscreen 0.45 detik. Matikan layer pattern selama
     -- tween supaya animasinya ringan, lalu hidupkan lagi setelah diam.
@@ -2926,12 +3318,60 @@ local function buildWindUI()
         end
     end)
 
-    AddToggle("Menu Background", true, function(v)
+    AddToggle("Menu Background", MiscCfg.MenuBackground, function(v)
+        MiscCfg.MenuBackground = (v == true)
         if menuBgController then pcall(function() menuBgController:SetEnabled(v) end) end
     end, "Misc")
 
     -- ---------- Tab: Controls ----------
     local Tab = UIWindow:Tab({ Title = "Controls", Icon = "sliders-horizontal" })
+
+    -- Search semua fitur: menyembunyikan element menu yang tidak cocok.
+    -- WindUI search bawaan cuma menyaring tab, jadi ini yang dipakai.
+    local featureSearchText = ""
+    local function applyFeatureSearch()
+        local q = string.lower(featureSearchText or "")
+        for name, handle in pairs(UIHandles) do
+            local realName = name:gsub("^Harden:", "")
+            if not name:find("^Harden:") then
+                local frame = nil
+                pcall(function() frame = handle and handle.ElementFrame end)
+                if typeof(frame) == "Instance" then
+                    local title = tostring((type(handle) == "table" and handle.Title) or realName)
+                    local hay = string.lower(title .. " " .. tostring(realName)
+                        .. " " .. tostring(translateKey(realName, "Indonesia")))
+                    pcall(function() frame.Visible = (q == "" or hay:find(q, 1, true) ~= nil) end)
+                end
+            end
+        end
+    end
+    genv.LoopXCode_ApplyFeatureSearch = applyFeatureSearch
+
+    local SearchSection = Tab:Section({ Title = "Search Features", Opened = true })
+    SearchSection:Input({
+        Title = "Search Features",
+        Value = "",
+        Placeholder = "Search all features",
+        Callback = function(v)
+            featureSearchText = tostring(v or "")
+            applyFeatureSearch()
+        end
+    })
+    pcall(function()
+        local box = nil
+        for _, o in ipairs(ParentGui:GetDescendants()) do
+            if o:IsA("TextBox") and tostring(o.PlaceholderText) == "Search all features" then
+                box = o
+                break
+            end
+        end
+        if box then
+            box:GetPropertyChangedSignal("Text"):Connect(function()
+                featureSearchText = tostring(box.Text or "")
+                applyFeatureSearch()
+            end)
+        end
+    end)
 
     local TargetSection = Tab:Section({ Title = "Target", Opened = true })
     local TargetParagraph = TargetSection:Paragraph({ Title = "Current Target", Desc = "Target: none" })
@@ -3035,7 +3475,7 @@ local function buildWindUI()
     local hudShadowInput = HudSection:Input({
         Title = "HUD Shadow",
         Value = tostring(HudCfg.Shadow),
-        Placeholder = "0.55  (0 = mati, 1 = pekat)",
+        Placeholder = "0.55  (0 = off, 1 = solid)",
         Callback = function(v)
             HudCfg.Shadow = tonumber(v) or HudCfg.Shadow
             pcall(function() genv.LoopXCode_ApplyHudLayout() end)
@@ -3133,7 +3573,7 @@ local function buildWindUI()
         v = (v == true)
         -- Kalau auto treadmill hidup, auto naik pet harus mati. Nyalain manual
         -- Auto Equip akan mematikan Auto Treadmill dulu.
-        if v and HardenCfg.AutoTreadmill then
+        if v and genv.LoopXCode_HardenCfg.AutoTreadmill then
             pcall(function() genv.LoopXCode_HardenToggle("AutoTreadmill", false) end)
             return
         end
@@ -3167,6 +3607,56 @@ local function buildWindUI()
     end
     task.spawn(equipBestSpeed)
 
+    -- ---------- Experimen: paksa tangkap walau lasso lemah ----------
+    local ExperimentSection = Tab:Section({ Title = "Experimen", Opened = true })
+    local weakCatchToggle = ExperimentSection:Toggle({
+        Title = "Weak Lasso Catch",
+        Desc = "Catch weak-lasso pets; still walks back to the safe zone",
+        Value = StealCfg.WeakAllowed,
+        Callback = function(v) StealCfg.WeakAllowed = (v == true) end
+    })
+    UIHandles["Weak Lasso Catch"] = weakCatchToggle
+
+    -- ---------- Auto Sell Pet ----------
+    local SellSection = Tab:Section({ Title = "Auto Sell", Opened = true })
+    local autoSellToggle = SellSection:Toggle({
+        Title = "Auto Sell Pet",
+        Desc = "Sell every selected rarity automatically",
+        Value = SellCfg.Enabled,
+        Callback = function(v) SellCfg.Enabled = (v == true) end
+    })
+    UIHandles["Auto Sell Pet"] = autoSellToggle
+    local sellIntervalInput = SellSection:Input({
+        Title = "Sell Interval",
+        Value = tostring(SellCfg.Interval),
+        Placeholder = "5",
+        Callback = function(v)
+            SellCfg.Interval = math.max(1, tonumber(v) or SellCfg.Interval)
+        end
+    })
+    UIHandles["Sell Interval"] = sellIntervalInput
+    local sellRarityDropdown = SellSection:Dropdown({
+        Title = "Sell Rarities",
+        Desc = "Select multiple rarities to sell",
+        Values = ALL_RARITIES,
+        Value = SellCfg.Rarities,
+        Multi = true,
+        Callback = function(v)
+            local selected = genv.LoopXCode_NormalizeSellRarities(v)
+            table.clear(SellCfg.Rarities)
+            for r in pairs(selected) do
+                if type(r) == "string" then SellCfg.Rarities[#SellCfg.Rarities + 1] = r end
+            end
+            table.sort(SellCfg.Rarities)
+        end
+    })
+    UIHandles["Sell Rarities"] = sellRarityDropdown
+    SellSection:Button({
+        Title = "Sell Now",
+        Desc = "Sell selected rarities once",
+        Callback = function() task.spawn(function() genv.LoopXCode_SellPetsNow() end) end
+    })
+
     -- ---------- Tab: Finder Pet ----------
     -- Menampilkan semua pet dari game: nama, income, rarity/tier, biome (dimap mana), dan gambar pet.
     local FinderTab = UIWindow:Tab({ Title = "Finder", Icon = "search" })
@@ -3195,7 +3685,7 @@ local function buildWindUI()
     FinderSection:Input({
         Title = "Find Pet",
         Value = "",
-        Placeholder = "Nama pet, mis. Bunny",
+        Placeholder = "Pet name, e.g. Bunny",
         Callback = function(v) FinderState.Query = tostring(v or "") end
     })
     FinderSection:Dropdown({
@@ -3340,8 +3830,8 @@ local function buildWindUI()
         end
         if handle then UIHandles[item.Name] = handle end
     end
-    for _, key in ipairs(HardenFeatureKeys) do
-        UIHandles["Harden:" .. key] = UIHandles[HardenFeatureLabels[key]]
+    for _, key in ipairs(genv.LoopXCode_HardenFeatureKeys) do
+        UIHandles["Harden:" .. key] = UIHandles[genv.LoopXCode_HardenFeatureLabels[key]]
     end
 
     -- ESP style: size + warna + shadow + font diatur sendiri-sendiri per kategori.
@@ -3453,8 +3943,21 @@ local function buildWindUI()
     FloatStatus.TextYAlignment = Enum.TextYAlignment.Center
     FloatStatus.RichText = true
     FloatStatus.Text = hudRichText()
-    FloatStatus.Active = false
+    FloatStatus.Active = true
     FloatStatus.Parent = FloatGui
+
+    local function clampHudPos(pos)
+        local w = math.max(1, math.floor(tonumber(HudCfg.Width) or 720))
+        local h = math.max(1, math.floor(tonumber(HudCfg.Height) or 108))
+        local gap = math.max(0, math.floor(tonumber(HudCfg.Gap) or 10))
+        local sx, sy = FloatGui.AbsoluteSize.X, FloatGui.AbsoluteSize.Y
+        if sx <= 0 or sy <= 0 then return pos end
+        local left = math.clamp(pos.X.Offset + pos.X.Scale * sx, 0, math.max(0, sx - w))
+        local top = math.clamp(pos.Y.Offset + pos.Y.Scale * sy, 0, math.max(0, sy - h))
+        HudCfg.X = left - sx / 2 + w / 2
+        HudCfg.Y = top - gap
+        return UDim2.new(0.5, left - sx / 2, 0, top)
+    end
 
     applyHudLayout = function()
         -- "any": bebas angka berapa pun; dibulatkan dan dijaga tetap positif.
@@ -3466,17 +3969,19 @@ local function buildWindUI()
         local so = math.clamp(math.floor(tonumber(HudCfg.ShadowOffset) or 2), 0, 12)
         HudCfg.Width, HudCfg.Height, HudCfg.TextSize, HudCfg.Gap = w, h, ts, gap
         HudCfg.Shadow, HudCfg.ShadowOffset = sh, so
+        HudCfg.X, HudCfg.Y = tonumber(HudCfg.X) or 0, tonumber(HudCfg.Y) or 0
         pcall(function()
             local hudFace = fontFaceByName(HudCfg.Font)
             local logoFace = fontFaceByName(HudCfg.LogoFont)
             applyFont(FloatStatus, hudFace)
             applyFont(HudShadow, hudFace)
             applyFont(LogoLabel, logoFace)
+            local pos = clampHudPos(UDim2.new(0.5, -w / 2 + HudCfg.X, 0, gap + HudCfg.Y))
             FloatStatus.Size = UDim2.new(0, w, 0, h)
-            FloatStatus.Position = UDim2.new(0.5, -w / 2, 0, gap)
+            FloatStatus.Position = pos
             FloatStatus.TextSize = ts
             HudShadow.Size = UDim2.new(0, w, 0, h)
-            HudShadow.Position = UDim2.new(0.5, -w / 2 + so, 0, gap + so)
+            HudShadow.Position = UDim2.new(pos.X.Scale, pos.X.Offset + so, pos.Y.Scale, pos.Y.Offset + so)
             HudShadow.TextSize = ts
             HudShadow.TextTransparency = 1 - sh
             HudShadow.Visible = sh > 0
@@ -3520,10 +4025,14 @@ local function buildWindUI()
         end)
     end
     MakeDraggable(FloatBtn, FloatBtn, openWindow)
+    -- HUD transparan bisa digeser, tapi selalu dijaga di dalam layar.
+    MakeDraggable(FloatStatus, FloatStatus, nil, clampHudPos, function()
+        pcall(genv.LoopXCode_HardenSave)
+    end)
 
     task.spawn(function()
         local frames, last = 0, os.clock()
-        while FloatStatus and FloatStatus.Parent and HardenAlive() do
+        while FloatStatus and FloatStatus.Parent and genv.LoopXCode_HardenAlive() do
             frames += 1
             if os.clock() - last >= 0.5 then
                 local fps = math.floor(frames / (os.clock() - last))
@@ -3550,11 +4059,16 @@ local function buildWindUI()
         UIWindow.Closed = false
         if type(UIWindow.Open) == "function" then UIWindow:Open() end
     end)
-    reapplyFonts()
-    applyLanguage()
-    installFontGuard()
-    if menuBgController then pcall(function() menuBgController:SetEnabled(true) end) end
-
-    buildFloatingLogo()
+    local okTail, tailErr = pcall(function()
+        reapplyFonts()
+        applyLanguage()
+        installFontGuard()
+        styleAllDropdowns()
+        applyFeatureSearch()
+        if menuBgController then pcall(function() menuBgController:SetEnabled(true) end) end
+        buildFloatingLogo()
+        closeLoadingOverlay()
+    end)
+    if not okTail then genv.LoopXCode_TailError = tostring(tailErr) end
 end
 buildWindUI()
