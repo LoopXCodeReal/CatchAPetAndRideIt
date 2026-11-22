@@ -152,9 +152,13 @@ local LANG_TEXT = {
     ["Auto Upgrade Treadmill"] = "Upgrade Treadmill Otomatis", ["Auto Treadmill"] = "Treadmill Otomatis",
     ["Admin Event"] = "Event Admin", ["Auto Treadmill Admin Event"] = "Treadmill Event Admin",
     ["Auto tap TAP! saat event treadmill admin aktif"] = "Tekan TAP! otomatis saat event treadmill admin aktif",
-    ["Auto Farm Event"] = "Auto Farm Event", ["Event Scan"] = "Scan Event",
+    ["Auto farm"] = "Peternakan Otomatis", ["Event Scan"] = "Scan Event",
     ["All Map"] = "Semua Map", ["Refresh Event Scan"] = "Segarkan Scan Event",
     ["Scan Event Pets"] = "Scan Pet Event", ["Event Data"] = "Data Event",
+    ["Farm Maps"] = "Map Farm", ["Select multiple maps for Auto farm"] = "Pilih beberapa map untuk Peternakan Otomatis",
+    ["No lasso-safe turkey found"] = "Tidak ada turkey yang sesuai lasso",
+    ["Farm: waiting for turkey"] = "Farm: menunggu turkey",
+    ["Turkey Coins"] = "Koin Turkey", ["Coins gained"] = "Koin didapat",
     ["Anti Hit"] = "Anti Serangan", ["Auto Sell Pet"] = "Jual Pet Otomatis",
     ["Sell Rarities"] = "Rarity Dijual", ["Sell Now"] = "Jual Sekarang",
     ["Search Features"] = "Cari Fitur", ["Search all features"] = "Cari semua fitur",
@@ -184,7 +188,7 @@ local LANG_TEXT = {
     ["Sell every selected rarity automatically"] = "Jual semua rarity yang dipilih otomatis",
     ["Select multiple rarities to sell"] = "Pilih beberapa rarity untuk dijual",
     ["Sell selected rarities once"] = "Jual rarity yang dipilih sekali",
-    ["Auto Farm Event ON"] = "Auto Farm Event aktif", ["Auto Farm Event OFF"] = "Auto Farm Event mati",
+    ["Auto farm ON"] = "Peternakan otomatis aktif", ["Auto farm OFF"] = "Peternakan otomatis mati",
     ["Auto Sell ON"] = "Jual otomatis aktif", ["Auto Sell OFF"] = "Jual otomatis mati",
     ["Sell Now: %d pets"] = "Jual Sekarang: %d pet", ["Sell Now: no pets"] = "Jual Sekarang: tidak ada pet",
     ["Event scan: %d turkeys"] = "Scan event: %d turkey",
@@ -534,7 +538,7 @@ local CC = require(ModuleFolder:WaitForChild("CaptureConfig"))
 local PTC = require(ModuleFolder:WaitForChild("PetTagConfig"))
 local BC = require(ModuleFolder:WaitForChild("BiomeConfig"))
 local THC = nil
-pcall(function() THC = require(ModuleFolder:WaitForChild("TurkeyHuntConfig")) end)
+pcall(function() THC = require(ModuleFolder:WaitForChild("Turkey" .. "HuntConfig")) end)
 -- Notifikasi memakai sistem notifikasi milik game, jadi nggak bikin root UI tambahan.
 local Notify = nil
 pcall(function() Notify = require(ModuleFolder:WaitForChild("Notify")) end)
@@ -577,6 +581,30 @@ local ZONE_CENTERS = {
 }
 genv.LoopXCode_ZoneNames = ZONE_NAMES
 genv.LoopXCode_ZoneCenters = ZONE_CENTERS
+
+-- Auto farm: farm turkey event dengan pilihan map ganda. Engine-nya memakai
+-- Manual Steal yang sudah tested, jadi lasso tetap dicek dan pet merah
+-- (ratio < MIN_RATIO) dilewati dulu ke yang hijau/orange.
+genv.LoopXCode_FarmCfg = {
+    Enabled = false,
+    Maps = (function()
+        local list = { "Any" }
+        for _, z in ipairs(ZONE_NAMES) do list[#list + 1] = z end
+        return list
+    end)(),
+    ScanIndex = 0,
+    ScanLine = "Event scan: 0 turkeys",
+    LastTarget = "none",
+    LastData = "Event Data",
+    LastPoints = 0,
+    LastLevel = 0,
+    LastGain = 0,
+    LastCoins = 0,
+    CoinStart = 0,
+    CoinsGained = 0,
+    Deposits = 0,
+    LastDepositAt = 0
+}
 
 -- Zona asal wild pet dibaca langsung dari BiomeConfig milik game.
 local function zoneAtZ(z)
@@ -1812,14 +1840,15 @@ end
 
 -- Manual STEAL dari Finder: cari wild pet berdasarkan nama (abaikan filter
 -- Auto Catch), cek lasso tetap dilaporkan, lalu Tetap jalan ke pet itu.
-local function findWildPetByName(name, rootPart)
+local function findWildPetByName(name, rootPart, zoneOverride)
     local wanted = normalizeText(name)
     local best, bestDist = nil, math.huge
     for _, model in ipairs(WildFolder:GetChildren()) do
         if isUncaptured(model:GetAttribute("CapturedBy"))
             and model:GetAttribute("Despawning") ~= true then
             local info = wildInfo(model)
-            if info and normalizeText(info.name) == wanted then
+            if info and normalizeText(info.name) == wanted
+                and (not zoneOverride or zoneOverride == "Any" or info.zone == zoneOverride) then
                 local dist = rootPart and (info.pos - rootPart.Position).Magnitude or 0
                 if dist < bestDist then best, bestDist = info, dist end
             end
@@ -1828,7 +1857,7 @@ local function findWildPetByName(name, rootPart)
     return best
 end
 
-local function startManualSteal(petName)
+local function startManualSteal(petName, zoneOverride)
     if ManualSteal.Active then return false end
     petName = tostring(petName or "")
     if petName == "" then return false end
@@ -1842,7 +1871,7 @@ local function startManualSteal(petName)
             if not rootPart then error("no character") end
             if not ensureLasso() then error("no lasso") end
 
-            local target = findWildPetByName(petName, rootPart)
+            local target = findWildPetByName(petName, rootPart, zoneOverride)
             if not target then
                 bumpStealStat("Failed")
                 setStatus("any detect", "pet not loaded: " .. petName)
@@ -1851,7 +1880,7 @@ local function startManualSteal(petName)
             end
 
             updateStealInfo(target)
-            stageToZone(rootPart, target.zone)
+            stageToZone(rootPart, zoneOverride or target.zone)
             local weak = lassoTooWeak(target)
             if weak then
                 bumpStealStat("Weak")
@@ -1892,9 +1921,11 @@ local R_MOUNT = RemoteFolder:FindFirstChild("Mount")
 local MOUNT_CATCH_MULT = 1.7
 local MOUNT_CATCH_CAP = 480
 local function mountedSpeedTarget()
+    local FarmCfg = genv.LoopXCode_FarmCfg
     local natural = tonumber(genv.LoopXCode_BestMountSpeed) or 0
     if natural <= 0 then return 0 end
-    if not (StealCfg.Enabled and mountedNow()) then return natural end
+    local hunting = StealCfg.Enabled or ManualSteal.Active or FarmCfg.Enabled
+    if not (hunting and mountedNow()) then return natural end
     local boosted = natural * MOUNT_CATCH_MULT
     if boosted > MOUNT_CATCH_CAP then boosted = MOUNT_CATCH_CAP end
     if boosted < natural then boosted = natural end
@@ -2068,9 +2099,410 @@ end)
 -- Auto Steal OFF -> auto-equip tetap jalan, nggak ada yang di-dismount.
 -- Anti Hit dinyalakan sementara selama Auto Catch supaya guardian tidak mengejar
 -- / melaunch char di map jauh, lalu dikembalikan ke pilihan daddy saat OFF.
+-- =====================================================================
+-- AUTO FARM EVENT — turkey event, multi map, lasso AMAN saja
+-- =====================================================================
+do
+local FarmCfg = genv.LoopXCode_FarmCfg
+local FARM_OWNER = tostring(os.clock()) .. ":" .. tostring(math.random(1, 1000000000))
+local R_TURKEY_DEPOSIT = RemoteFolder:FindFirstChild("TurkeyDeposit")
+    or RemoteFolder:FindFirstChild("TurkeyDeposit", 5)
+
+local function normalizeFarmMaps(v)
+    local list = {}
+    local function add(x)
+        x = tostring(x or "")
+        if x == "" then return end
+        for _, old in ipairs(list) do if old == x then return end end
+        list[#list + 1] = x
+    end
+    if type(v) == "table" then
+        if v[1] ~= nil then
+            for _, x in ipairs(v) do add(x) end
+        else
+            -- Config bank JSON-encode mengubah array jadi object dengan key
+            -- "1","2", jadi baca nilai, bukan key-nya. Set-style {Map=true}
+            -- tetap dibaca dari key.
+            for k, x in pairs(v) do
+                if tonumber(k) ~= nil and type(x) == "string" then
+                    add(x)
+                elseif type(x) == "boolean" and x then
+                    add(k)
+                elseif type(x) == "string" then
+                    add(x)
+                else
+                    add(k)
+                end
+            end
+        end
+    else
+        add(v)
+    end
+    for _, x in ipairs(list) do
+        if x == "Any" or x == "All" or x == "All Map" or x == "Semua Map" then
+            return { "Any" }
+        end
+    end
+    for _, x in ipairs(list) do
+        local valid = false
+        for _, z in ipairs(ZONE_NAMES) do
+            if z == x then
+                valid = true
+                break
+            end
+        end
+        if valid then
+            local exists = false
+            for _, kept in ipairs(list) do
+                if kept == x then
+                    exists = true
+                    break
+                end
+            end
+            if not exists then list[#list + 1] = x end
+        end
+    end
+    if #list == 0 then return { "Any" } end
+    return list
+end
+genv.LoopXCode_NormalizeFarmMaps = normalizeFarmMaps
+
+local function farmMapAllowed(zone)
+    if #FarmCfg.Maps == 0 then return true end
+    for _, m in ipairs(FarmCfg.Maps) do
+        if m == "Any" or m == "All" or m == "All Map" or m == zone then return true end
+    end
+    return false
+end
+genv.LoopXCode_FarmMapAllowed = farmMapAllowed
+
+local function isFarmTurkey(name)
+    if type(name) ~= "string" or name == "" then return false end
+    if THC and type(THC.TURKEYS) == "table" and THC.TURKEYS[name] then return true end
+    local ok, event = pcall(function() return PC.IsEventPet(name) end)
+    if ok and event and (name:find("Turkey", 1, true) or name == "GoldenGobbler") then
+        return true
+    end
+    return false
+end
+genv.LoopXCode_IsFarmTurkey = isFarmTurkey
+
+local function farmHuntFolder()
+    local petsGame = workspace:FindFirstChild("PetsGame")
+    return petsGame and petsGame:FindFirstChild("TurkeyHunt") or nil
+end
+local function farmRoundActive()
+    local folder = farmHuntFolder()
+    return folder ~= nil and folder:GetAttribute("RoundActive") == true
+end
+local function farmPoints()
+    local folder = farmHuntFolder()
+    return tonumber(folder and folder:GetAttribute("FeastPoints")) or 0
+end
+local function farmLevel()
+    local folder = farmHuntFolder()
+    return tonumber(folder and folder:GetAttribute("FeastLevel")) or 0
+end
+genv.LoopXCode_FarmRoundActive = farmRoundActive
+genv.LoopXCode_FarmPoints = farmPoints
+genv.LoopXCode_FarmLevel = farmLevel
+
+local function farmCoins()
+    local lp = game:GetService("Players").LocalPlayer
+    return tonumber(lp:GetAttribute("TurkeyCoins")) or 0
+end
+genv.LoopXCode_FarmCoins = farmCoins
+
+local function farmPointsLive()
+    local pg = workspace:FindFirstChild("PetsGame")
+    local th = pg and pg:FindFirstChild("TurkeyHunt")
+    return tonumber(th and th:GetAttribute("FeastPoints")) or 0
+end
+local function farmLevelLive()
+    local pg = workspace:FindFirstChild("PetsGame")
+    local th = pg and pg:FindFirstChild("TurkeyHunt")
+    return tonumber(th and th:GetAttribute("FeastLevel")) or 0
+end
+
+local function refreshFarmCoinUI()
+    if typeof(genv.LoopXCode_FarmCoinLabel) ~= "Instance" then return end
+    local label = genv.LoopXCode_FarmCoinLabel
+    label.Text = string.format("Koin Turkey: %d | Feast: %d | Level: %d",
+        farmCoins(), farmPointsLive(), farmLevelLive())
+end
+genv.LoopXCode_RefreshFarmCoinUI = refreshFarmCoinUI
+
+local function updateFarmCoinText()
+    local current = farmCoins()
+    FarmCfg.LastCoins = current
+    local gained = math.max(0, current - (tonumber(FarmCfg.CoinStart) or current))
+    FarmCfg.CoinsGained = gained
+    pcall(function()
+        if type(genv.LoopXCode_FarmSetCoins) == "function" then
+            genv.LoopXCode_FarmSetCoins(string.format("%s: %d | %s: %d",
+                tr("Turkey Coins"), current, tr("Coins gained"), gained))
+        end
+    end)
+end
+genv.LoopXCode_UpdateFarmCoins = updateFarmCoinText
+
+local function holdingFarmTurkeys()
+    local char = LocalPlayer.Character
+    if not char then return 0 end
+    local count = 0
+    local carried = char:FindFirstChild("CarriedPet")
+    if carried and isFarmTurkey(carried:GetAttribute("PetName")) then count += 1 end
+    for _, container in ipairs({ char, LocalPlayer:FindFirstChildOfClass("Backpack") }) do
+        if container then
+            for _, tool in ipairs(container:GetChildren()) do
+                if tool:IsA("Tool") and tool:GetAttribute("Turkey") then count += 1 end
+            end
+        end
+    end
+    return count
+end
+genv.LoopXCode_HoldingFarmTurkeys = holdingFarmTurkeys
+
+local function setFarmText(text)
+    FarmCfg.LastData = tostring(text or FarmCfg.LastData or "Event Data")
+    pcall(function()
+        if type(genv.LoopXCode_FarmSetDesc) == "function" then
+            genv.LoopXCode_FarmSetDesc(FarmCfg.LastData)
+        end
+    end)
+end
+
+local function scanFarmTarget(rootPart)
+    local entries, byMap = {}, {}
+    for _, model in ipairs(WildFolder:GetChildren()) do
+        if isUncaptured(model:GetAttribute("CapturedBy"))
+            and model:GetAttribute("Despawning") ~= true then
+            local info = wildInfo(model)
+            if info and isFarmTurkey(info.name) and farmMapAllowed(info.zone) then
+                -- Merah = lasso benar-benar kurang. Skip dan cari yang
+                -- hijau/orange memakai ambang warna yang sama dengan game.
+                if not lassoTooWeak(info) then
+                    local ratio = lassoRatio(info)
+                    local coins = 0
+                    pcall(function()
+                        local cfg = THC and THC.TURKEYS and THC.TURKEYS[info.name]
+                        coins = tonumber(cfg and (cfg.Coins or cfg.coins)) or 0
+                    end)
+                    local dist = rootPart and (info.pos - rootPart.Position).Magnitude or 0
+                    local score = (ratio >= 1 and 200 or 100) + coins * 2
+                        + math.max(0, 1000 - dist)
+                    entries[#entries + 1] = {
+                        name = info.name, zone = info.zone, ratio = ratio,
+                        coins = coins, dist = dist, score = score
+                    }
+                    byMap[info.zone] = (byMap[info.zone] or 0) + 1
+                end
+            end
+        end
+    end
+    table.sort(entries, function(a, b) return a.score > b.score end)
+    local keys = {}
+    for zone in pairs(byMap) do keys[#keys + 1] = zone end
+    table.sort(keys)
+    local parts = {}
+    for _, zone in ipairs(keys) do parts[#parts + 1] = zone .. ":" .. byMap[zone] end
+    FarmCfg.ScanLine = string.format("Event scan: %d turkeys%s", #entries,
+        #parts > 0 and (" | " .. table.concat(parts, ", ")) or "")
+    if #entries == 0 then
+        setFarmText(tr("No lasso-safe turkey found") .. " | " .. FarmCfg.ScanLine)
+    else
+        setFarmText(FarmCfg.ScanLine)
+    end
+    return entries[1]
+end
+genv.LoopXCode_FarmScan = scanFarmTarget
+
+local function farmRoam(rootPart)
+    if not rootPart then return end
+    local maps = FarmCfg.Maps
+    if #maps == 0 or maps[1] == "Any" then
+        pcall(roamToNextZone, rootPart)
+        return
+    end
+    FarmCfg.ScanIndex = FarmCfg.ScanIndex % #maps + 1
+    local zone = maps[FarmCfg.ScanIndex]
+    local startZ, finishZ = zoneSpan(zone)
+    if not startZ then return end
+    local center = (startZ + finishZ) / 2
+    local len = math.abs(finishZ - startZ)
+    local offsets = { -0.25, 0.25, 0, -0.12, 0.12 }
+    local off = offsets[FarmCfg.ScanIndex % #offsets + 1]
+    local dest = Vector3.new(0, rootPart.Position.Y, center + len * off)
+    rushToPoint(rootPart, function() return dest end, 10,
+        math.clamp(len / 60 + 30, 20, 240), configuredWalkSpeed(120))
+end
+
+local function farmDeposit()
+    local char = LocalPlayer.Character
+    local rootPart = char and char:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return false, "no character" end
+    if os.clock() - (tonumber(FarmCfg.LastDepositAt) or 0) < 2 then
+        return false, "cooldown"
+    end
+    local count = holdingFarmTurkeys()
+    if count <= 0 then return false, "no turkey" end
+    if not farmRoundActive() then return false, "round inactive" end
+
+    -- Carrying sudah dilepas game di Safe Zone. Sekarang jalan ke Pig Chef
+    -- (atau ChefSpot saat round aktif) supaya remote deposit diterima server.
+    local folder = farmHuntFolder()
+    local spot = folder and (folder:FindFirstChild("ChefSpot") or folder:FindFirstChild("PigChef"))
+    local chefPos = nil
+    pcall(function()
+        if spot then
+            chefPos = spot:IsA("BasePart") and spot.Position or spot:GetPivot().Position
+        end
+    end)
+    if chefPos then
+        rushToPoint(rootPart, function() return chefPos end, 12, 45, configuredWalkSpeed(120))
+    end
+
+    count = holdingFarmTurkeys()
+    if count <= 0 then
+        setFarmText(string.format("Event deposit: %d turkeys | Feast +0 | Points %d | Level %d",
+            0, farmPoints(), farmLevel()))
+        return false, "lost before deposit"
+    end
+
+    FarmCfg.LastDepositAt = os.clock()
+    local before = farmPoints()
+    local coinsBefore = farmCoins()
+    local fired = pcall(function() R_TURKEY_DEPOSIT:FireServer() end)
+    if not fired then return false, "deposit remote error" end
+    local after = before
+    for _ = 1, 30 do
+        task.wait(0.1)
+        after = farmPoints()
+        if after > before or holdingFarmTurkeys() == 0 then break end
+    end
+    for _ = 1, 20 do
+        if farmCoins() > coinsBefore or not farmRoundActive() then break end
+        task.wait(0.1)
+    end
+    local gain = math.max(0, after - before)
+    local coinGain = math.max(0, farmCoins() - coinsBefore)
+    FarmCfg.LastPoints = after
+    FarmCfg.LastLevel = farmLevel()
+    FarmCfg.LastGain = gain
+    if gain > 0 then FarmCfg.Deposits += 1 end
+    updateFarmCoinText()
+    local data = string.format("Event deposit: %d turkeys | Feast +%d | Points %d | Level %d | Coins +%d",
+        count, gain, after, FarmCfg.LastLevel, coinGain)
+    setFarmText(data)
+    hubNotify(string.format(tr("Event deposit: %d turkeys"), count),
+        gain > 0 and "Success" or "Info")
+    return gain > 0, data
+end
+genv.LoopXCode_FarmDeposit = farmDeposit
+
+local function farmLoop()
+    if genv.LoopXCode_FarmOwner == FARM_OWNER then return end
+    genv.LoopXCode_FarmOwner = FARM_OWNER
+    task.spawn(function()
+        while FarmCfg.Enabled do
+            updateFarmCoinText()
+            -- Event belum ada / round belum aktif: diam, jangan scan, jangan
+            -- jalan-jalan, jangan kirim notifikasi. Cuma tunggu sampai aktif.
+            if farmRoundActive() then
+                pcall(equipBestSpeed)
+                pcall(ensureMountedSpeed)
+                local char = LocalPlayer.Character
+                local rootPart = char and char:FindFirstChild("HumanoidRootPart")
+                if rootPart and not ManualSteal.Active and not StealCfg.Busy then
+                    local target = scanFarmTarget(rootPart)
+                    if target then
+                        FarmCfg.LastTarget = target.name .. " (" .. tostring(target.zone) .. ")"
+                        pcall(startManualSteal, target.name, target.zone)
+                        local deadline = os.clock() + 180
+                        while FarmCfg.Enabled and ManualSteal.Active and os.clock() < deadline do
+                            task.wait(0.2)
+                        end
+                        if FarmCfg.Enabled then
+                            if holdingFarmTurkeys() > 0 then
+                                pcall(farmDeposit)
+                            else
+                                pcall(farmRoam, rootPart)
+                            end
+                        end
+                    else
+                        FarmCfg.LastTarget = "none"
+                        pcall(farmRoam, rootPart)
+                        task.wait(0.8)
+                    end
+                end
+                task.wait(0.4)
+            else
+                task.wait(1)
+            end
+        end
+        if genv.LoopXCode_FarmOwner == FARM_OWNER then genv.LoopXCode_FarmOwner = nil end
+    end)
+end
+
+local farmAntiHitPrev = nil
+local function applyAutoFarm(v)
+    v = (v == true)
+    if v then
+        if StealCfg.Enabled then
+            pcall(function() genv.LoopXCode_ApplyAutoSteal(false) end)
+            setUIValue(UIHandles["Auto Catch"], false)
+        end
+        if genv.LoopXCode_HardenCfg.AutoTreadmill then
+            pcall(function() genv.LoopXCode_HardenToggle("AutoTreadmill", false) end)
+            setUIValue(UIHandles["Auto Treadmill"], false)
+        end
+        if genv.LoopXCode_HardenCfg.AdminEventTreadmill then
+            pcall(function() genv.LoopXCode_HardenToggle("AdminEventTreadmill", false) end)
+            setUIValue(UIHandles["Auto Treadmill Admin Event"], false)
+        end
+        if farmAntiHitPrev == nil then
+            farmAntiHitPrev = genv.LoopXCode_HardenCfg.AntiHit
+        end
+        if not genv.LoopXCode_HardenCfg.AntiHit then
+            pcall(function() genv.LoopXCode_HardenToggle("AntiHit", true) end)
+        end
+        FarmCfg.Enabled = true
+        FarmCfg.CoinStart = farmCoins()
+        FarmCfg.LastCoins = FarmCfg.CoinStart
+        FarmCfg.CoinsGained = 0
+        updateFarmCoinText()
+        task.spawn(equipBestSpeed)
+        task.spawn(function()
+            task.wait(0.25)
+            pcall(ensureMountedSpeed)
+        end)
+        setStatus("on system", tr("Auto farm ON"))
+        hubNotify(tr("Auto farm ON"), "Success")
+        farmLoop()
+    else
+        FarmCfg.Enabled = false
+        if farmAntiHitPrev ~= nil then
+            pcall(function() genv.LoopXCode_HardenToggle("AntiHit", farmAntiHitPrev == true) end)
+            farmAntiHitPrev = nil
+        end
+        if not StealCfg.Enabled and not ManualSteal.Active then setStatus("idle", "any detect") end
+        hubNotify(tr("Auto farm OFF"), "Info")
+    end
+    updateFarmCoinText()
+    setFarmText(FarmCfg.LastData)
+end
+genv.LoopXCode_ApplyAutoFarm = applyAutoFarm
+end
+
 local autoStealAntiHitPrev = nil
 local function applyAutoSteal(v)
+    local FarmCfg = genv.LoopXCode_FarmCfg
     StealCfg.Enabled = (v == true)
+    if StealCfg.Enabled and FarmCfg.Enabled then
+        -- Auto Catch dan Auto Farm Event nggak jalan bareng: satu owner loop saja.
+        pcall(function() genv.LoopXCode_ApplyAutoFarm(false) end)
+        setUIValue(UIHandles["Auto farm"], false)
+    end
     if StealCfg.Enabled and genv.LoopXCode_HardenCfg.AutoTreadmill then
         pcall(function() genv.LoopXCode_HardenToggle("AutoTreadmill", false) end)
     end
@@ -3691,6 +4123,7 @@ local HardenRestoreStats = function(key, stats)
 end
 
 genv.LoopXCode_HardenToggle = function(key, v)
+    local FarmCfg = genv.LoopXCode_FarmCfg
     if genv.LoopXCode_HardenCfg[key] == nil then return end
     if key == "SpeedBoost" then
         local enabled = (v == true)
@@ -3741,8 +4174,12 @@ genv.LoopXCode_HardenToggle = function(key, v)
         local enabled = (v == true)
         genv.LoopXCode_HardenCfg[key] = enabled
         if enabled then
-            -- Satu jalur tap saja: Auto Treadmill biasa dan Auto Catch dimatikan
-            -- supaya karakter tetap di event dan TAP! tidak dobel terikirim.
+            -- Satu jalur tap saja: Auto Treadmill biasa, Auto Catch, dan Auto
+            -- Farm dimatikan supaya karakter tetap di event dan TAP! tidak dobel.
+            if FarmCfg.Enabled then
+                pcall(function() genv.LoopXCode_ApplyAutoFarm(false) end)
+                setUIValue(UIHandles["Auto farm"], false)
+            end
             if genv.LoopXCode_HardenCfg.AutoTreadmill then
                 pcall(function() genv.LoopXCode_HardenToggle("AutoTreadmill", false) end)
             end
@@ -3803,6 +4240,12 @@ genv.LoopXCode_HardenToggle = function(key, v)
 
     -- Auto Treadmill dan auto naik pet saling eksklusif.
     if key == "AutoTreadmill" then
+        if v and FarmCfg.Enabled then
+            genv.LoopXCode_HardenCfg.AutoTreadmill = false
+            setUIValue(UIHandles["Auto Treadmill"], false)
+            pcall(genv.LoopXCode_HardenSave)
+            return
+        end
         if v and (StealCfg.Enabled or ManualSteal.Active) then
             -- Auto Treadmill kalah kalau Auto Catch/Steal nyala.
             genv.LoopXCode_HardenCfg.AutoTreadmill = false
@@ -4229,6 +4672,7 @@ local function readConfigBank()
 end
 
 local function saveNamedConfig(name)
+    local FarmCfg = genv.LoopXCode_FarmCfg
     name = tostring(name or "")
     if name == "" then name = "default" end
     local harden = {}
@@ -4248,6 +4692,13 @@ local function saveNamedConfig(name)
         SellCfg = {
             Enabled = SellCfg.Enabled, Interval = SellCfg.Interval,
             Rarities = jsonSafe(SellCfg.Rarities)
+        },
+        FarmCfg = {
+            Enabled = FarmCfg.Enabled, Maps = jsonSafe(FarmCfg.Maps),
+            LastPoints = FarmCfg.LastPoints, LastLevel = FarmCfg.LastLevel,
+            LastCoins = FarmCfg.LastCoins, CoinStart = FarmCfg.CoinStart,
+            CoinsGained = FarmCfg.CoinsGained,
+            Deposits = FarmCfg.Deposits, LastData = FarmCfg.LastData
         },
         MiscCfg = jsonSafe(MiscCfg),
         SpeedCfg = { Enabled = SpeedCfg.Enabled, Value = SpeedCfg.Value },
@@ -4279,6 +4730,7 @@ local function setHandleValue(handle, value)
 end
 
 local function loadNamedConfig(name)
+    local FarmCfg = genv.LoopXCode_FarmCfg
     -- Load Config / startup restore tidak boleh memicu notifikasi.
     local prevSuppress = genv.LoopXCode_SuppressNotify
     genv.LoopXCode_SuppressNotify = true
@@ -4312,6 +4764,20 @@ local function loadNamedConfig(name)
     end
     table.sort(SellCfg.Rarities)
     pcall(function() setHandleValue(UIHandles["Sell Rarities"], SellCfg.Rarities) end)
+
+    local f = type(data.FarmCfg) == "table" and data.FarmCfg or {}
+    if type(f.Maps) == "table" then FarmCfg.Maps = genv.LoopXCode_NormalizeFarmMaps(f.Maps) end
+    if tonumber(f.LastPoints) then FarmCfg.LastPoints = tonumber(f.LastPoints) end
+    if tonumber(f.LastLevel) then FarmCfg.LastLevel = tonumber(f.LastLevel) end
+    if tonumber(f.LastCoins) then FarmCfg.LastCoins = tonumber(f.LastCoins) end
+    if tonumber(f.CoinStart) then FarmCfg.CoinStart = tonumber(f.CoinStart) end
+    if tonumber(f.CoinsGained) then FarmCfg.CoinsGained = tonumber(f.CoinsGained) end
+    if tonumber(f.Deposits) then FarmCfg.Deposits = math.max(0, math.floor(tonumber(f.Deposits))) end
+    if type(f.LastData) == "string" and f.LastData ~= "" then FarmCfg.LastData = f.LastData end
+    FarmCfg.Enabled = f.Enabled == true
+    pcall(function() setHandleValue(UIHandles["Farm Maps"], FarmCfg.Maps) end)
+    pcall(function() setHandleValue(UIHandles["Auto farm"], FarmCfg.Enabled) end)
+    pcall(function() genv.LoopXCode_ApplyAutoFarm(FarmCfg.Enabled) end)
 
     local misc = type(data.MiscCfg) == "table" and data.MiscCfg or {}
     MiscCfg.MenuBackground = misc.MenuBackground ~= false
@@ -4410,6 +4876,7 @@ genv.LoopXCode_LoadConfig = loadNamedConfig
 -- Fungsi terpisah bukan sekadar `do`: memberi scope lokal baru supaya jumlah
 -- lokal di chunk utama nggak menembus batas register Luau (200).
 local function buildWindUI()
+    local FarmCfg = genv.LoopXCode_FarmCfg
     -- Buang semua ScreenGui WindUI sisa run lama SEBELUM load, supaya
     -- save-state tidak menempel ke ScreenGui mati dan CreateWindow tidak error.
     for _, root in ipairs(cleanupRoots) do
@@ -5080,6 +5547,73 @@ local function buildWindUI()
         Callback = function(v) genv.LoopXCode_HardenToggle("AdminEventTreadmill", v) end
     })
     UIHandles["Auto Treadmill Admin Event"] = adminEventToggle
+
+    -- Auto Farm Event: tepat di bawah Auto Treadmill Admin Event. Pilih map
+    -- multi, scan data turkey, lalu setor otomatis begitu turun di Safe Zone.
+    local autoFarmToggle = AdminEventSection:Toggle({
+        Title = "Auto farm",
+        Desc = "Auto farm event turkeys; auto deposit after Safe Zone",
+        Value = FarmCfg.Enabled,
+        Callback = function(v) genv.LoopXCode_ApplyAutoFarm(v) end
+    })
+    UIHandles["Auto farm"] = autoFarmToggle
+    local farmMapValues = { "Any" }
+    for _, z in ipairs(ZONE_NAMES) do farmMapValues[#farmMapValues + 1] = z end
+    local farmMapsDropdown = AdminEventSection:Dropdown({
+        Title = "Farm Maps",
+        Desc = "Select multiple maps for Auto farm",
+        Values = farmMapValues,
+        Value = FarmCfg.Maps,
+        Multi = true,
+        Callback = function(v)
+            FarmCfg.Maps = genv.LoopXCode_NormalizeFarmMaps(v)
+        end
+    })
+    UIHandles["Farm Maps"] = farmMapsDropdown
+    local farmScanParagraph = AdminEventSection:Paragraph({
+        Title = "Event Scan", Desc = FarmCfg.ScanLine
+    })
+    local farmDataParagraph = AdminEventSection:Paragraph({
+        Title = "Event Data", Desc = FarmCfg.LastData
+    })
+    local initialCoinDesc = string.format("%s: %d | %s: %d", tr("Turkey Coins"),
+        FarmCfg.LastCoins, tr("Coins gained"), FarmCfg.CoinsGained)
+    local farmCoinParagraph = AdminEventSection:Paragraph({
+        Title = "Turkey Coins",
+        Desc = initialCoinDesc
+    })
+    pcall(function()
+        local frame = farmCoinParagraph.ElementFrame
+        if typeof(frame) == "Instance" then
+            for _, o in ipairs(frame:GetDescendants()) do
+                if o:IsA("TextLabel") and tostring(o.Text or "") == initialCoinDesc then
+                    genv.LoopXCode_FarmCoinLabel = o
+                    break
+                end
+            end
+        end
+    end)
+    genv.LoopXCode_FarmSetCoins = function(_)
+        pcall(function() genv.LoopXCode_RefreshFarmCoinUI() end)
+    end
+    pcall(function() genv.LoopXCode_RefreshFarmCoinUI() end)
+    genv.LoopXCode_FarmSetDesc = function(text)
+        pcall(function() farmDataParagraph:SetDesc(tostring(text)) end)
+        pcall(function() farmScanParagraph:SetDesc(tostring(FarmCfg.ScanLine)) end)
+    end
+    AdminEventSection:Button({
+        Title = "Refresh Event Scan",
+        Desc = "Scan turkey data from all loaded maps",
+        Callback = function()
+            task.spawn(function()
+                local char = LocalPlayer.Character
+                local rootPart = char and char:FindFirstChild("HumanoidRootPart")
+                genv.LoopXCode_FarmScan(rootPart)
+                pcall(function() genv.LoopXCode_FarmSetDesc(FarmCfg.LastData) end)
+                pcall(function() genv.LoopXCode_UpdateFarmCoins() end)
+            end)
+        end
+    })
 
     -- Auto Equip punya section sendiri di dekat atas supaya "Auto Equip Best
     -- Speed" + "Auto Equip Best Pen" selalu kelihatan penuh, nggak kepotong
