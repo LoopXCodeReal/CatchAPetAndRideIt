@@ -3161,9 +3161,8 @@ local function buildWindUI()
         local themes = lib.Themes
         local dark = type(themes) == "table" and themes.Dark or nil
         if type(dark) == "table" then
-            -- Latar elemen pakai warna card gelap, BUKAN hitam pekat.
-            dark.LabelBackground = Color3.fromRGB(24, 28, 42)
-            dark.LabelBackgroundTransparency = 0.5
+            dark.LabelBackground = Color3.fromRGB(24, 28, 42)   -- bukan hitam
+            dark.LabelBackgroundTransparency = 0.42
             dark.CornerRadius = UDim.new(0, 12)
             dark.ElementCornerRadius = UDim.new(0, 10)
             dark.WindowCornerRadius = UDim.new(0, 14)
@@ -4305,23 +4304,24 @@ local function buildWindUI()
     if not okTail then genv.LoopXCode_TailError = tostring(tailErr) end
 end
 buildWindUI()
+
 -- =====================================================================
--- 7. RADIUS PASS — radius semua sisi, bayangan kotak hitam dihapus
+-- 7. RADIUS PASS — radius semua sisi, kotak/bayangan hitam dibuang
 -- =====================================================================
--- WindUI menaruh frame bayangan kotak hitam ("Shadow") di belakang tiap
--- elemen. Radius di elemen jadi nggak ada artinya karena sudut bayangannya
--- tetap kotak dan nyembul keluar. Pass ini: (a) mematikan semua objek bayangan,
--- (b) memberi UICorner ke semua container/elemen/menu, (c) mengganti kedalaman
--- visual dengan latar card gelap + garis tepi tipis yang ikut radius.
+-- Catatan penting: pass TIDAK boleh mengandalkan AbsoluteSize tepat setelah
+-- build, karena layout WindUI belum dihitung (semua 0). Karena itu:
+--   * UICorner dipasang tanpa syarat ukuran,
+--   * bayangan dibasmi lewat nama DAN geometri (objek lebih besar dari induk),
+--   * pass diulang bertahap + tiap ada objek baru (tab dibuka / finder refresh).
 do
     local RADIUS_WINDOW = UDim.new(0, 16)
     local RADIUS_PANEL = UDim.new(0, 12)
     local RADIUS_ELEMENT = UDim.new(0, 10)
     local RADIUS_PILL = UDim.new(1, 0)
     local CARD_COLOR = Color3.fromRGB(24, 28, 42)
-    local CARD_ALPHA = 0.5
-    local STROKE_COLOR = Color3.fromRGB(46, 52, 72)
-    local STROKE_ALPHA = 0.45
+    local CARD_ALPHA = 0.42
+    local STROKE_COLOR = Color3.fromRGB(48, 54, 74)
+    local STROKE_ALPHA = 0.4
 
     local function ensureCorner(obj, radius)
         if not obj or not obj:IsA("GuiObject") then return nil end
@@ -4353,11 +4353,9 @@ do
     end
 
     local function isNearBlack(c)
-        return c.R < 0.14 and c.G < 0.14 and c.B < 0.14
+        return c.R < 0.16 and c.G < 0.16 and c.B < 0.16
     end
 
-    -- Bayangan kotak WindUI dimatikan total: Visible = false + latar transparan.
-    -- Nama apa pun yang mengandung "shadow" kena, termasuk DropShadow/ElementShadow.
     local function killShadow(obj)
         if not obj:IsA("GuiObject") then return false end
         if string.lower(tostring(obj.Name or "")):find("shadow", 1, true) then
@@ -4370,9 +4368,27 @@ do
         return false
     end
 
+    -- Bayangan yang namanya bukan "shadow" tetap ketangkap di sini: cirinya
+    -- selalu LEBIH BESAR dari induknya (offset -3 dengan ukuran +6).
+    local function killOversizedChildren(row)
+        local rs = row.AbsoluteSize
+        if rs.X <= 0 or rs.Y <= 0 then return end
+        for _, c in ipairs(row:GetChildren()) do
+            if c:IsA("GuiObject") and c ~= row then
+                local cs = c.AbsoluteSize
+                if cs.X > rs.X + 1 and cs.Y > rs.Y + 1 then
+                    pcall(function()
+                        c.Visible = false
+                        c.BackgroundTransparency = 1
+                    end)
+                end
+            end
+        end
+    end
+
     local function polish(obj)
         if not obj or not obj:IsA("GuiObject") then return end
-        if obj.Name == "HUD" or obj.Name == "HUDShadow" then return end -- diurus terpisah
+        if obj.Name == "HUD" or obj.Name == "HUDShadow" then return end
         if killShadow(obj) then return end
 
         if obj:IsA("ScrollingFrame") then
@@ -4380,40 +4396,46 @@ do
             return
         end
 
-        local isBox = obj:IsA("Frame") or obj:IsA("TextButton")
-            or obj:IsA("ImageLabel") or obj:IsA("ImageButton")
-        local isText = obj:IsA("TextLabel") or obj:IsA("TextBox")
-        if not (isBox or isText) then return end
+        local isSurface = obj:IsA("Frame") or obj:IsA("TextButton")
+        local isOther = obj:IsA("ImageLabel") or obj:IsA("ImageButton")
+            or obj:IsA("TextLabel") or obj:IsA("TextBox")
+        if not (isSurface or isOther) then return end
 
+        -- Radius dipasang lebih dulu, tanpa syarat ukuran.
         ensureCorner(obj, radiusFor(obj))
+        if not isSurface then return end
 
-        -- Hanya baris elemen yang dikasih latar + tepi. TextLabel dibiarkan
-        -- transparan supaya nggak muncul kotak ganda di dalam baris.
-        if not isBox then return end
-        local size = obj.AbsoluteSize
-        if size.Y < 22 or size.Y > 60 or size.X < 90 then return end
+        killOversizedChildren(obj)
 
-        if obj.BackgroundTransparency > 0.95 then
-            pcall(function()
-                obj.BackgroundColor3 = CARD_COLOR
-                obj.BackgroundTransparency = CARD_ALPHA
-            end)
-        elseif isNearBlack(obj.BackgroundColor3) then
-            -- Hitam pekat diganti slate gelap, jadi nggak kelihatan kotak hitam.
-            pcall(function() obj.BackgroundColor3 = CARD_COLOR end)
+        -- Hitam pekat bawaan theme diganti slate, jadi nggak ada kotak hitam.
+        -- Kalau latarnya transparan, dikasih card slate tipis supaya radiusnya
+        -- tetap kelihatan tanpa perlu bayangan.
+        if obj.BackgroundTransparency < 1 then
+            if isNearBlack(obj.BackgroundColor3) then
+                pcall(function() obj.BackgroundColor3 = CARD_COLOR end)
+            end
+            if obj.BackgroundTransparency > 0.9 then
+                pcall(function() obj.BackgroundTransparency = CARD_ALPHA end)
+            end
+            if not obj:FindFirstChildOfClass("UIStroke") then
+                pcall(function()
+                    local s = Instance.new("UIStroke")
+                    s.Thickness = 1
+                    s.Color = STROKE_COLOR
+                    s.Transparency = STROKE_ALPHA
+                    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+                    s.Parent = obj
+                end)
+            end
         end
+    end
 
-        -- Pengganti bayangan: garis tepi tipis yang ikut radius.
-        if not obj:FindFirstChildOfClass("UIStroke") then
-            pcall(function()
-                local s = Instance.new("UIStroke")
-                s.Thickness = 1
-                s.Color = STROKE_COLOR
-                s.Transparency = STROKE_ALPHA
-                s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-                s.Parent = obj
-            end)
-        end
+    local function sweep()
+        local win = genv.LoopXCode_UIWindow
+        local root = win and win.UIElements and win.UIElements.Main or nil
+        if not root then return end
+        ensureCorner(root, RADIUS_WINDOW)
+        for _, o in ipairs(root:GetDescendants()) do polish(o) end
     end
 
     local root = nil
@@ -4421,19 +4443,27 @@ do
         local win = genv.LoopXCode_UIWindow
         root = win and win.UIElements and win.UIElements.Main or nil
     end)
+
     if root then
-        ensureCorner(root, RADIUS_WINDOW)
-        for _, o in ipairs(root:GetDescendants()) do polish(o) end
-        -- Element baru (hasil refresh finder, dropdown dibuka, config load)
-        -- langsung diproses juga, jadi nggak ada yang balik kotak/hitam.
+        -- Bertahap: 0 (sekarang), 0.15, 0.5, 1.2, 2.5 detik. Layout baru stabil
+        -- setelah frame pertama, jadi sapuan awal saja tidak cukup.
+        for _, delay in ipairs({ 0, 0.15, 0.5, 1.2, 2.5 }) do
+            task.delay(delay, function()
+                if genv.LoopXCode_UIWindow == genv.LoopXCode_UIWindow then
+                    pcall(sweep)
+                end
+            end)
+        end
+        -- Tab WindUI dibangun saat pertama kali diklik: elemen baru langsung
+        -- diurus setelah layout-nya jadi.
         pcall(function()
             root.DescendantAdded:Connect(function(o)
-                task.spawn(function() polish(o) end)
+                task.delay(0.1, function() pcall(polish, o) end)
             end)
         end)
     end
 
-    -- Floating logo + HUD: bayangan kotak diganti latar tipis beradius.
+    -- Floating logo + HUD.
     pcall(function()
         local floatGui = ParentGui:FindFirstChild("LXC_ToggleGui")
         if not floatGui then return end
@@ -4448,22 +4478,22 @@ do
         if hud then
             ensureCorner(hud, UDim.new(0, 14))
             pcall(function()
-                hud.BackgroundColor3 = Color3.fromRGB(14, 18, 30)
-                hud.BackgroundTransparency = 0.62
+                hud.BackgroundColor3 = Color3.fromRGB(16, 20, 32)
+                hud.BackgroundTransparency = 0.6
             end)
         end
         local shadow = floatGui:FindFirstChild("HUDShadow")
         if shadow then
             ensureCorner(shadow, UDim.new(0, 14))
             pcall(function()
-                shadow.BackgroundColor3 = Color3.fromRGB(10, 12, 20)
-                shadow.BackgroundTransparency = 0.72
-                shadow.Visible = true -- ini bukan bayangan kotak, cuma cadangan teks
+                shadow.BackgroundColor3 = Color3.fromRGB(12, 14, 22)
+                shadow.BackgroundTransparency = 0.7
+                shadow.Visible = true
             end)
         end
     end)
 
-    -- Kartu loading: sudut radius, tanpa bayangan kotak.
+    -- Kartu loading.
     pcall(function()
         local lg = ParentGui:FindFirstChild("LXC_LoadingGui")
         local dim = lg and lg:FindFirstChildWhichIsA("Frame")
