@@ -8,6 +8,7 @@
       4. Restore snapshot toggle di-reset supaya tidak memakai data basi.
       5. FPS/Ping tampil sebagai paragraph WindUI, bukan HUD manual.
       6. Floating open button pakai drag+klik terpadu, satu jalur klik.
+      7. RADIUS PASS: semua sisi radius (window, elemen, dropdown, HUD, float).
     ====================================================================
 ]]
 
@@ -289,7 +290,7 @@ LoadingCard.AnchorPoint = Vector2.new(0.5, 0.5)
 LoadingCard.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
 LoadingCard.BorderSizePixel = 0
 LoadingCard.Parent = LoadingDim
-Instance.new("UICorner", LoadingCard).CornerRadius = UDim.new(0, 14)
+Instance.new("UICorner", LoadingCard).CornerRadius = UDim.new(0, 16)
 AddStroke(LoadingCard, 1.5, Color3.fromRGB(58, 58, 68), 0)
 
 local LoadingTitle = Instance.new("TextLabel")
@@ -3153,12 +3154,18 @@ local function buildWindUI()
     })
 
     -- WindUI Dark theme ngasih tiap toggle/dropdown/section bayangan kotak
-    -- hitam (LabelBackgroundTransparency = 0.83). Matikan dari theme-nya
-    -- supaya semua elemen bersih, bukan ditutup-tutupi satu per satu.
+    -- hitam (LabelBackgroundTransparency = 0.83). Sekarang kotaknya dipakai
+    -- lagi tapi tipis, dan semua sudutnya di-radius lewat theme + RADIUS PASS
+    -- di bawah, jadi elemen kelihatan seperti kartu rounded, bukan kotak.
     pcall(function()
         local themes = lib.Themes
         local dark = type(themes) == "table" and themes.Dark or nil
-        if type(dark) == "table" then dark.LabelBackgroundTransparency = 1 end
+        if type(dark) == "table" then
+            dark.LabelBackgroundTransparency = 0.55
+            dark.CornerRadius = UDim.new(0, 12)
+            dark.ElementCornerRadius = UDim.new(0, 10)
+            dark.WindowCornerRadius = UDim.new(0, 14)
+        end
         if type(lib.SetTheme) == "function" then lib:SetTheme("Dark") end
     end)
 
@@ -3306,6 +3313,12 @@ local function buildWindUI()
             if typeof(ui.Menu) == "Instance" then
                 ui.Menu.ImageColor3 = Color3.fromRGB(18, 22, 34)
                 ui.Menu.ImageTransparency = 0.02
+                local c = ui.Menu:FindFirstChildOfClass("UICorner")
+                if c then
+                    c.CornerRadius = UDim.new(0, 12)
+                else
+                    Instance.new("UICorner", ui.Menu).CornerRadius = UDim.new(0, 12)
+                end
             end
             if typeof(ui.MenuCanvas) == "Instance" then
                 for _, o in ipairs(ui.MenuCanvas:GetDescendants()) do
@@ -3315,6 +3328,9 @@ local function buildWindUI()
                         o.BackgroundTransparency = 1
                     elseif o:IsA("ImageButton") then
                         o.ImageColor3 = Color3.fromRGB(30, 34, 50)
+                        if not o:FindFirstChildOfClass("UICorner") then
+                            Instance.new("UICorner", o).CornerRadius = UDim.new(0, 8)
+                        end
                     end
                 end
             end
@@ -3601,6 +3617,7 @@ local function buildWindUI()
         end
     end)
 
+    -- Section HUD Size (satu saja, jangan dobel).
     local HudSection = Tab:Section({ Title = "HUD Size", Opened = true })
     HudSection:Input({
         Title = "HUD Width",
@@ -3659,89 +3676,14 @@ local function buildWindUI()
     local hudFontDropdown = HudSection:Dropdown({
         Title = "HUD Font",
         Values = FONT_CHOICES,
-        Value = tostring(HudCfg.Font or "SemiBold"),
-        Callback = function(v)
-            HudCfg.Font = tostring(v or "SemiBold")
-            pcall(function() genv.LoopXCode_ApplyHudLayout() end)
-        end
-    })
-    UIHandles["HUD Font"] = hudFontDropdown
-    local logoFontDropdown = HudSection:Dropdown({
-        Title = "Logo Font",
-        Values = FONT_CHOICES,
-        Value = tostring(HudCfg.LogoFont or "Logo"),
-        Callback = function(v)
-            HudCfg.LogoFont = tostring(v or "Logo")
-            pcall(function() genv.LoopXCode_ApplyHudLayout() end)
-        end
-    })
-    UIHandles["Logo Font"] = logoFontDropdown
-
-    local HudSection = Tab:Section({ Title = "HUD Size", Opened = true })
-    HudSection:Input({
-        Title = "HUD Width",
-        Value = tostring(HudCfg.Width),
-        Placeholder = "720",
-        Callback = function(v)
-            HudCfg.Width = tonumber(v) or HudCfg.Width
-            pcall(function() genv.LoopXCode_ApplyHudLayout() end)
-        end
-    })
-    HudSection:Input({
-        Title = "HUD Height",
-        Value = tostring(HudCfg.Height),
-        Placeholder = "108",
-        Callback = function(v)
-            HudCfg.Height = tonumber(v) or HudCfg.Height
-            pcall(function() genv.LoopXCode_ApplyHudLayout() end)
-        end
-    })
-    HudSection:Input({
-        Title = "HUD Text Size",
-        Value = tostring(HudCfg.TextSize),
-        Placeholder = "18",
-        Callback = function(v)
-            HudCfg.TextSize = tonumber(v) or HudCfg.TextSize
-            pcall(function() genv.LoopXCode_ApplyHudLayout() end)
-        end
-    })
-    HudSection:Input({
-        Title = "HUD Gap",
-        Value = tostring(HudCfg.Gap),
-        Placeholder = "10",
-        Callback = function(v)
-            HudCfg.Gap = tonumber(v) or HudCfg.Gap
-            pcall(function() genv.LoopXCode_ApplyHudLayout() end)
-        end
-    })
-    HudSection:Input({
-        Title = "HUD Shadow",
-        Value = tostring(HudCfg.Shadow),
-        Placeholder = "0.55  (0 = off, 1 = solid)",
-        Callback = function(v)
-            HudCfg.Shadow = tonumber(v) or HudCfg.Shadow
-            pcall(function() genv.LoopXCode_ApplyHudLayout() end)
-        end
-    })
-    HudSection:Input({
-        Title = "HUD Shadow Offset",
-        Value = tostring(HudCfg.ShadowOffset),
-        Placeholder = "2",
-        Callback = function(v)
-            HudCfg.ShadowOffset = tonumber(v) or HudCfg.ShadowOffset
-            pcall(function() genv.LoopXCode_ApplyHudLayout() end)
-        end
-    })
-    HudSection:Dropdown({
-        Title = "HUD Font",
-        Values = FONT_CHOICES,
         Value = tostring(HudCfg.Font or "Mono"),
         Callback = function(v)
             HudCfg.Font = tostring(v or "Mono")
             pcall(function() genv.LoopXCode_ApplyHudLayout() end)
         end
     })
-    HudSection:Dropdown({
+    UIHandles["HUD Font"] = hudFontDropdown
+    local logoFontDropdown = HudSection:Dropdown({
         Title = "Logo Font",
         Values = FONT_CHOICES,
         Value = tostring(HudCfg.LogoFont or "Display"),
@@ -3750,6 +3692,7 @@ local function buildWindUI()
             pcall(function() genv.LoopXCode_ApplyHudLayout() end)
         end
     })
+    UIHandles["Logo Font"] = logoFontDropdown
 
     local CaptureSection = trackSection("Capture", Tab:Section({ Title = "Capture", Opened = true }))
     local autoCatchToggle = CaptureSection:Toggle({
@@ -4146,7 +4089,7 @@ local function buildWindUI()
     FloatBtn.Parent = FloatGui
 
     local FloatCorner = Instance.new("UICorner")
-    FloatCorner.CornerRadius = UDim.new(0, 14)
+    FloatCorner.CornerRadius = UDim.new(0, 16)
     FloatCorner.Parent = FloatBtn
 
     local FloatStroke = AddStroke(FloatBtn, 1.5, Color3.fromRGB(58, 58, 68), 0)
@@ -4198,7 +4141,8 @@ local function buildWindUI()
 
     local HudShadow = Instance.new("TextLabel")
     HudShadow.Name = "HUDShadow"
-    HudShadow.BackgroundTransparency = 1
+    HudShadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    HudShadow.BackgroundTransparency = 0.55
     HudShadow.Font = Enum.Font.GothamBold
     HudShadow.TextColor3 = Color3.fromRGB(0, 0, 0)
     HudShadow.TextXAlignment = Enum.TextXAlignment.Center
@@ -4206,12 +4150,14 @@ local function buildWindUI()
     HudShadow.Text = hudPlainText()
     HudShadow.Active = false
     HudShadow.Parent = FloatGui
+    Instance.new("UICorner", HudShadow).CornerRadius = UDim.new(0, 14)
 
     local FloatStatus = Instance.new("TextLabel")
     FloatStatus.Name = "HUD"
     FloatStatus.Size = UDim2.new(0, HudCfg.Width, 0, HudCfg.Height)
     FloatStatus.Position = UDim2.new(0.5, -HudCfg.Width / 2, 0, HudCfg.Gap)
-    FloatStatus.BackgroundTransparency = 1
+    FloatStatus.BackgroundColor3 = Color3.fromRGB(10, 12, 20)
+    FloatStatus.BackgroundTransparency = 0.72
     FloatStatus.Font = Enum.Font.GothamBold
     FloatStatus.TextSize = HudCfg.TextSize
     FloatStatus.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -4221,6 +4167,7 @@ local function buildWindUI()
     FloatStatus.Text = hudRichText()
     FloatStatus.Active = true
     FloatStatus.Parent = FloatGui
+    Instance.new("UICorner", FloatStatus).CornerRadius = UDim.new(0, 14)
 
     local function clampHudPos(pos)
         local w = math.max(1, math.floor(tonumber(HudCfg.Width) or 720))
@@ -4356,3 +4303,111 @@ local function buildWindUI()
     if not okTail then genv.LoopXCode_TailError = tostring(tailErr) end
 end
 buildWindUI()
+
+-- =====================================================================
+-- 7. RADIUS PASS — semua sisi dibikin radius, tidak ada sudut kotak
+-- =====================================================================
+-- Dipasang SETELAH hub selesai dibangun. Setiap container, baris elemen,
+-- dropdown, menu dropdown, scrollbar, HUD, shadow HUD, tombol float, dan
+-- kartu loading diberi UICorner (radius seragam di keempat sisi). Elemen baru
+-- (hasil refresh finder, dropdown yang dibuka, config load) ikut di-radius
+-- lewat DescendantAdded, jadi tidak ada yang balik jadi kotak.
+do
+    local RADIUS_WINDOW = UDim.new(0, 16)
+    local RADIUS_PANEL = UDim.new(0, 12)
+    local RADIUS_ELEMENT = UDim.new(0, 10)
+    local RADIUS_PILL = UDim.new(1, 0)
+    local CARD_COLOR = Color3.fromRGB(24, 28, 42)
+    local CARD_ALPHA = 0.55
+
+    -- Satu corner per instance, radius-nya dinormalkan kalau sudah ada.
+    local function ensureCorner(obj, radius)
+        if not obj or not obj:IsA("GuiObject") then return nil end
+        local existing = obj:FindFirstChildOfClass("UICorner")
+        if existing then
+            pcall(function() existing.CornerRadius = radius end)
+            return existing
+        end
+        local ok, corner = pcall(function()
+            local c = Instance.new("UICorner")
+            c.CornerRadius = radius
+            c.Parent = obj
+            return c
+        end)
+        if ok then return corner end
+        return nil
+    end
+
+    local function radiusFor(obj)
+        local name = string.lower(tostring(obj.Name or ""))
+        if name:find("scrollbar", 1, true) or name:find("pill", 1, true)
+            or name == "bar" or name == "thumb" then
+            return RADIUS_PILL
+        end
+        local h = obj.AbsoluteSize.Y
+        if h >= 120 then return RADIUS_WINDOW end
+        if h >= 44 then return RADIUS_PANEL end
+        return RADIUS_ELEMENT
+    end
+
+    local function polish(obj)
+        if not obj or not obj:IsA("GuiObject") then return end
+        if obj.Name == "HUD" or obj.Name == "HUDShadow" then return end -- diurus terpisah
+        if obj:IsA("ScrollingFrame") then
+            -- canvas dibiarkan bersih, radius cuma di frame luarnya
+            ensureCorner(obj, RADIUS_PANEL)
+            return
+        end
+        local isText = obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")
+        local isBox = obj:IsA("Frame") or obj:IsA("ImageLabel") or obj:IsA("ImageButton")
+        if not (isText or isBox) then return end
+        ensureCorner(obj, radiusFor(obj))
+        -- Kotak elemen yang latarnya transparan dikasih latar tipis, kalau nggak
+        -- radius-nya nggak kelihatan sama sekali.
+        if (obj:IsA("Frame") or obj:IsA("TextButton")) and obj.BackgroundTransparency > 0.95 then
+            local size = obj.AbsoluteSize
+            if size.Y >= 22 and size.Y <= 60 and size.X >= 90 then
+                pcall(function()
+                    obj.BackgroundColor3 = CARD_COLOR
+                    obj.BackgroundTransparency = CARD_ALPHA
+                end)
+            end
+        end
+    end
+
+    local root = nil
+    pcall(function()
+        local win = genv.LoopXCode_UIWindow
+        root = win and win.UIElements and win.UIElements.Main or nil
+    end)
+    if root then
+        ensureCorner(root, RADIUS_WINDOW)
+        for _, o in ipairs(root:GetDescendants()) do polish(o) end
+        pcall(function()
+            root.DescendantAdded:Connect(function(o)
+                task.spawn(function() polish(o) end)
+            end)
+        end)
+    end
+
+    -- Floating logo + HUD: radius semua sisi, HUD/shadow dapat latar tipis
+    -- supaya radiusnya kelihatan dan teks tetap kebaca di atas wallpaper.
+    pcall(function()
+        local floatGui = ParentGui:FindFirstChild("LXC_ToggleGui")
+        if not floatGui then return end
+        local btn = floatGui:FindFirstChild("LOOPXCODE_FloatingToggle")
+        if btn then ensureCorner(btn, RADIUS_WINDOW) end
+        local shadow = floatGui:FindFirstChild("HUDShadow")
+        if shadow then ensureCorner(shadow, UDim.new(0, 14)) end
+        local hud = floatGui:FindFirstChild("HUD")
+        if hud then ensureCorner(hud, UDim.new(0, 14)) end
+    end)
+
+    -- Kartu loading: sudut sudah radius dari build, di sini dinormalkan.
+    pcall(function()
+        local lg = ParentGui:FindFirstChild("LXC_LoadingGui")
+        local dim = lg and lg:FindFirstChildWhichIsA("Frame")
+        local card = dim and dim:FindFirstChildWhichIsA("Frame")
+        if card then ensureCorner(card, UDim.new(0, 18)) end
+    end)
+end
