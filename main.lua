@@ -33,6 +33,23 @@ local genv = (type(getgenv) == "function") and getgenv() or _G
 genv.LoopXCode_RunEpoch = (tonumber(genv.LoopXCode_RunEpoch) or 0) + 1
 local RUN_EPOCH = genv.LoopXCode_RunEpoch
 
+-- First run: semua toggle mulai OFF. Config yang tersimpan tetap bisa
+-- menghidupkan lagi lewat Load Config (setHandleValue menimpa toggle UI).
+local FIRST_RUN_OFF = true
+local function defaultToggle(state)
+    if FIRST_RUN_OFF then return false end
+    return state == true
+end
+
+-- Shadow disimpan sebagai persen (0-100). Nilai lama 0-1 tetap diterima.
+local function shadowAmount(value, fallback)
+    local n = tonumber(value)
+    if not n then n = tonumber(fallback) or 0 end
+    if n > 1 then n = n / 100 end
+    return math.clamp(n, 0, 1)
+end
+genv.LoopXCode_ShadowAmount = shadowAmount
+
 -- =====================================================================
 -- FONT — pakai keluarga Gotham yang bersih dan enak dibaca.
 -- Display buat logo, Bold/SemiBold buat judul & ESP, Regular buat teks hub.
@@ -113,7 +130,9 @@ local LANG_TEXT = {
     ["Auto Catch"] = "Tangkap Otomatis", ["Catch Reel"] = "Mode Reel",
     ["Catch Rarity (tier)"] = "Rarity Tangkap (tier)", ["Catch Zone"] = "Zona Tangkap",
     ["Min Income"] = "Income Minimum", ["Auto Equip Best Speed"] = "Auto Equip Kecepatan Terbaik",
+    ["Auto Equip Best Pen"] = "Auto Equip Pen Terbaik",
     ["Walk Speed"] = "Kecepatan Jalan", ["Walk speed used by Auto Catch in studs/sec (16-400)"] = "Kecepatan jalan Auto Catch dalam studs/detik (16-400)",
+    ["Speed Boost"] = "Tambah Kecepatan", ["Boost on-foot and mounted movement to this speed (16-500)"] = "Percepat jalan kaki dan naik pet sampai kecepatan ini (16-500)",
     ["Find Pet"] = "Cari Pet", ["Biome / Map"] = "Biome / Map",
     ["Refresh Finder"] = "Segarkan Pencari", ["Apply Safe Fonts"] = "Terapkan Font Aman",
     ["Menu Background"] = "Latar Menu", ["Skip Tutorial"] = "Lewati Tutorial",
@@ -126,7 +145,7 @@ local LANG_TEXT = {
     ["Save current settings under Config Name"] = "Simpan pengaturan saat ini dengan Nama Config",
     ["Load settings from Config Name"] = "Muat pengaturan dari Nama Config",
 
-    ["Auto Claim Index"] = "Klaim Index Otomatis", ["Auto Upgrade"] = "Upgrade Otomatis",
+    ["Auto Claim Index"] = "Klaim Index Otomatis", ["Auto Upgrade Pen"] = "Upgrade Pen Otomatis",
     ["Auto Upgrade Treadmill"] = "Upgrade Treadmill Otomatis", ["Auto Treadmill"] = "Treadmill Otomatis",
     ["Anti Hit"] = "Anti Serangan", ["Auto Sell Pet"] = "Jual Pet Otomatis",
     ["Sell Rarities"] = "Rarity Dijual", ["Sell Now"] = "Jual Sekarang",
@@ -141,8 +160,9 @@ local LANG_TEXT = {
     ["Approach, lasso, reel, and secure the pet"] = "Dekati, laso, reel, dan amankan pet",
     ["ON = ride the fastest pet / OFF = dismount (auto off when Auto Treadmill is ON)"] =
         "ON = naik pet tercepat / OFF = turun dari pet (mati otomatis saat Auto Treadmill ON)",
+    ["Automatically keep the best pets in the pen"] = "Otomatis memasukkan pet terbaik ke pen",
     ["Force all hub text to Gotham (clean and readable)"] = "Paksa semua teks hub pakai Gotham (bersih & enak dibaca)",
-    ["5k / 30b / 50t  (blank = any)"] = "5k / 30b / 50t  (kosong = semua)",
+    ["1S 20M 30K 50B 1T  (blank = any)"] = "1S 20M 30K 50B 1T  (kosong = semua)",
     ["Pet name, e.g. Bunny"] = "Nama pet, mis. Bunny",
     ["lasso too weak: "] = "lasso kurang kuat: ",
     ["strong enough"] = "cukup kuat", ["too weak"] = "kurang kuat",
@@ -206,7 +226,7 @@ local alive = (type(STATE) == "table" and type(STATE.alive) == "function")
     and function() return STATE.alive() and genv.LoopXCode_RunEpoch == RUN_EPOCH end
     or function() return genv.LoopXCode_RunEpoch == RUN_EPOCH end
 genv.LoopXCode_AutoEquipSpeed = false
-genv.LoopXCode_AutoEquipV2 = true
+genv.LoopXCode_AutoEquipV2 = false
 
 -- Safe GUI Parent (executor gethui / CoreGui / PlayerGui)
 local function GetSafeGuiParent()
@@ -219,12 +239,29 @@ end
 
 local ParentGui = GetSafeGuiParent()
 
--- Sisa build lama yang memakai UI manual dibersihkan.
-for _, o in ipairs(ParentGui:GetChildren()) do
-    if o.Name == "LoopXCodeUI" or o.Name == "LoopXCode_FloatingToggle"
-        or o.Name == "LXC_ToggleGui" or o.Name == "LXC_MenuBackground"
-        or o.Name == "LXC_LoadingGui" or o.Name == "LoopXCode_ESP_Holder" then
-        pcall(function() o:Destroy() end)
+-- Sisa build lama yang memakai UI manual dibersihkan. Setelah round change,
+-- gethui() bisa berpindah (CoreGui -> PlayerGui), jadi sapu semua root yang
+-- mungkin dipakai run sebelumnya supaya nggak ada logo/loading dobel.
+local cleanupRoots = { ParentGui }
+pcall(function() if CoreGui and CoreGui ~= ParentGui then table.insert(cleanupRoots, CoreGui) end end)
+pcall(function()
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if pg and pg ~= ParentGui then table.insert(cleanupRoots, pg) end
+end)
+local seenCleanupRoot = {}
+for _, root in ipairs(cleanupRoots) do
+    if root and not seenCleanupRoot[root] then
+        seenCleanupRoot[root] = true
+        for _, o in ipairs(root:GetChildren()) do
+            local n = tostring(o.Name or "")
+            local ln = n:lower()
+            if n == "LoopXCodeUI" or n == "LoopXCode_FloatingToggle"
+                or n == "LXC_ToggleGui" or n == "LXC_HudGui" or n == "LXC_MenuBackground"
+                or n == "LXC_LoadingGui" or n == "LoopXCode_ESP_Holder"
+                or ln == "windui" or ln:find("windui/", 1, true) then
+                pcall(function() o:Destroy() end)
+            end
+        end
     end
 end
 -- Live-reload: matikan instance harden lama yang masih menyimpan loop aktif.
@@ -234,7 +271,7 @@ pcall(function()
         for _, k in ipairs({
             "AutoClaimIndex", "AutoUpgradeTraining", "AutoUpgradeTreadmill", "AutoTreadmill", "AntiBan", "AntiAFK",
             "GodMode", "Fly", "JumpInfinity", "AntiKnockDown", "Invisible",
-            "AntiRagdoll", "AutoAntiSpeed", "AntiHit"
+            "AntiRagdoll", "AutoAntiSpeed", "AntiHit", "SpeedBoost"
         }) do prev[k] = false end
     end
 end)
@@ -312,7 +349,7 @@ LoadingText.Size = UDim2.new(1, 0, 0, 22)
 LoadingText.Position = UDim2.new(0, 0, 0.62, 0)
 LoadingText.BackgroundTransparency = 1
 LoadingText.FontFace = SafeFonts.Bold
-LoadingText.Text = "Loading..."
+LoadingText.Text = "LoopXCode AntiBan"
 LoadingText.TextColor3 = Color3.fromRGB(180, 190, 210)
 LoadingText.TextSize = 13
 LoadingText.Parent = LoadingCard
@@ -433,7 +470,7 @@ local UIItems = {}
 
 local function AddToggle(name, defaultState, callback, group)
     UIItems[#UIItems + 1] = {
-        Kind = "Toggle", Name = name, Default = defaultState == true,
+        Kind = "Toggle", Name = name, Default = defaultToggle(defaultState),
         Callback = callback, Group = group or "Misc"
     }
 end
@@ -520,6 +557,7 @@ genv.LoopXCode_ZoneSpan = zoneSpan
 -- Jadi bukan sekadar cfg.Speed (itulah sebabnya auto-equip salah pilih).
 local MC = require(ModuleFolder:WaitForChild("MountConfig"))
 local MUT = require(ModuleFolder:WaitForChild("MutationConfig"))
+local SC = require(ModuleFolder:WaitForChild("ShopConfig"))
 
 local R_STEAL = {
     StartCapture = RemoteFolder:WaitForChild("StartCapture"),
@@ -552,6 +590,18 @@ local StealCfg = {
 }
 genv.LoopXCode_StealCfg = StealCfg
 
+-- Speed Boost: nilai dari menu Walk Speed dipakai juga buat jalan kaki / naik
+-- pet. Nilai besar dibatasi ke batas aman supaya physics Roblox nggak meledak.
+local SpeedCfg = { Enabled = false, Value = 400 }
+genv.LoopXCode_SpeedCfg = SpeedCfg
+local function speedTarget()
+    local v = tonumber(SpeedCfg.Value) or 400
+    if v < 16 then v = 16 end
+    if v > 500 then v = 500 end
+    return v
+end
+genv.LoopXCode_SpeedTarget = speedTarget
+
 -- Auto Sell Pet: jual otomatis pet di bag yang tier-nya dipilih (multi-select).
 local SellCfg = {
     Enabled = false,
@@ -562,14 +612,15 @@ genv.LoopXCode_SellCfg = SellCfg
 local R_SELL = RemoteFolder:FindFirstChild("SellPets")
 
 -- Ukuran HUD floating bisa diatur bebas dari menu Controls.
-local HudCfg = { Width = 720, Height = 108, TextSize = 18, Gap = 10, Shadow = 0.55, ShadowOffset = 2, Font = "Bold", LogoFont = "Logo", X = 0, Y = 0 }
+local HudCfg = { Width = 720, Height = 108, TextSize = 18, Gap = 10, Shadow = 50, ShadowOffset = 1, Font = "Bold", LogoFont = "Logo", X = 0, Y = 0 }
 genv.LoopXCode_HudCfg = HudCfg
 local applyHudLayout = function() end
 genv.LoopXCode_ApplyHudLayout = function() applyHudLayout() end
 
-local MiscCfg = { MenuBackground = true, AutoEquipBestSpeed = true }
+local MiscCfg = { MenuBackground = true, AutoEquipBestSpeed = defaultToggle(true), AutoEquipBestPen = false }
 genv.LoopXCode_MiscCfg = MiscCfg
 genv.LoopXCode_SetMenuBackground = function() end
+genv.LoopXCode_SetAutoEquipBestPen = function() end
 
 -- Live-reload bikin instance lama tetap hidup dengan StealCfg sendiri. Kalau
 -- nggak dimatikan semua, loop lamanya nyelak ke reel instance baru (kabur ke
@@ -729,16 +780,32 @@ local function rarityRank(name)
     return 0
 end
 
--- Parse income custom: 5k=5000, 30b=30e9, 50t=50e12, "any"/kosong = 0 (terima semua).
+-- Parse income compact: 1S / 20M / 30K / 50B / 1T / 10B, juga format bebas
+-- seperti "5M or more", "min 5m", "50K+". Blank/any/all = 0 (terima semua).
+-- Angka yang dihasilkan dibandingkan dengan income TAMPILAN game (sudah
+-- termasuk bonus size, mutation, dan MoneyMult).
+local INCOME_SUFFIXES = {
+    { "sp", 1e24 }, { "sx", 1e21 }, { "s", 1e21 },
+    { "qn", 1e18 }, { "qd", 1e15 }, { "q", 1e15 },
+    { "t", 1e12 }, { "b", 1e9 }, { "m", 1e6 }, { "k", 1e3 }
+}
 local function parseIncome(text)
     local raw = string.lower(tostring(text or ""))
     raw = raw:gsub("[%s,_]+", "")
-    -- Ambil angka PERTAMA yang ada, bukan harus seluruh string. Jadi semua
-    -- format ini tetap jalan: 5k / 30b / 50t / 5M / 5M+ / 5M or more /
-    -- min 5M / 5m ke atas / 5m atau lebih. Tanpa angka = any.
-    local num, suffix = raw:match("(%d+%.?%d*)([kmbtq]?)")
+    if raw == "" or raw == "any" or raw == "all" or raw == "none"
+        or raw == "off" or raw == "-" or raw == "0" then
+        return 0
+    end
+    local num, letters = raw:match("(%d+%.?%d*)(%a*)")
     if not num then return 0 end
-    local mult = ({ k = 1e3, m = 1e6, b = 1e9, t = 1e12, q = 1e15 })[suffix] or 1
+    local mult = 1
+    letters = letters or ""
+    for _, entry in ipairs(INCOME_SUFFIXES) do
+        if letters:sub(1, #entry[1]) == entry[1] then
+            mult = entry[2]
+            break
+        end
+    end
     return (tonumber(num) or 0) * mult
 end
 genv.LoopXCode_ParseIncome = parseIncome
@@ -750,11 +817,40 @@ local function petCfg(name)
     return nil
 end
 
-local function petIncome(cfg)
+-- Income yang dipakai filter harus SAMA dengan angka yang dilihat daddy di UI
+-- game: GetPetIncome * bonus size * bonus mutation * MoneyMult. Kalau cukup
+-- pakai base GetPetIncome, angka "10B" nggak bakal pernah cocok karena UI game
+-- menampilkan angka yang sudah dikali bonus.
+local function petIncome(cfg, model)
     if not cfg then return 0 end
-    local ok, v = pcall(function() return CC.GetPetIncome(cfg) end)
-    if ok and type(v) == "number" then return v end
-    return tonumber(cfg.Income) or 0
+    local moneyMult = 1
+    pcall(function() moneyMult = tonumber(SC.MoneyMult(LocalPlayer)) or 1 end)
+
+    local direct = nil
+    if model then
+        pcall(function() direct = tonumber(model:GetAttribute("Income")) end)
+    end
+    if direct then return direct * moneyMult end
+
+    local base = tonumber(cfg.Income) or 0
+    pcall(function()
+        local v = CC.GetPetIncome(cfg)
+        if type(v) == "number" then base = v end
+    end)
+
+    local sizeBonus, mutationBonus = 1, 1
+    if model then
+        local size = tonumber(model:GetAttribute("Size")) or 1
+        pcall(function() sizeBonus = tonumber(PC.IncomeBonus(size)) or 1 end)
+        local mutation = model:GetAttribute("Mutation")
+        if mutation and mutation ~= "" then
+            pcall(function()
+                local m = MUT.Get(tostring(mutation))
+                mutationBonus = tonumber(m and m.Bonus) or 1
+            end)
+        end
+    end
+    return base * sizeBonus * mutationBonus * moneyMult
 end
 
 local function wildRoot(model)
@@ -782,7 +878,7 @@ local function wildInfo(model)
         zone = zoneAtZ(pos.Z),
         kg = tonumber(model:GetAttribute("Kg")) or 0,
         speed = tonumber(model:GetAttribute("Speed")) or (cfg and tonumber(cfg.Speed)) or 0,
-        income = petIncome(cfg),
+        income = petIncome(cfg, model),
         pos = pos
     }
 end
@@ -1547,9 +1643,27 @@ local function dismountPet()
 end
 genv.LoopXCode_DismountPet = dismountPet
 
+-- Auto Equip Best Pen: tombol "EquipBestMount" di CustomBackpack game.
+-- Remote yang sama dipanggil-server; balasan {already=true} normal kalau pen
+-- sudah berisi pet terbaik, jadi nggak perlu spam ulang.
+local function equipBestPen()
+    local remote = R_STEAL and R_STEAL.PenPetAction
+    if not remote then return false end
+    local ok, res = pcall(function() return remote:InvokeServer("equipbestmount") end)
+    return ok and type(res) == "table" and res.ok == true
+end
+genv.LoopXCode_EquipBestPen = equipBestPen
+
+task.spawn(function()
+    while alive() do
+        if MiscCfg.AutoEquipBestPen then pcall(equipBestPen) end
+        task.wait(2.5)
+    end
+end)
+
 -- Auto Equip Best Speed: event perubahan Mount/MountId + jaga-jaga tiap 3 detik,
 -- supaya kalau hewan dilepas / diganti manual, langsung balik ke yang tercepat.
-genv.LoopXCode_AutoEquipV2 = true
+-- Default ikut first-run OFF; Load Config / toggle yang menghidupkan.
 pcall(function()
     local function reEquip()
         if genv.LoopXCode_AutoEquipV2 then
@@ -1622,17 +1736,17 @@ genv.LoopXCode_SkipTutorial = SkipTutorial
 -- =====================================================================
 local Camera = Workspace.CurrentCamera
 local ESPConfig = {
-    Enabled = true,
+    Enabled = defaultToggle(true),
     MaxDistance = 1500,
     FixedSize = true,
-    ShowInfo = true,
+    ShowInfo = defaultToggle(true),
     -- RenderStepped tetap dipakai buat timing, tapi kerja berat ESP cuma
     -- jalan tiap interval ini. Naikkan kalau masih lag, turunkan kalau mau halus.
     UpdateInterval = 0.12,
     ScanInterval = 0.75,
-    ESPPlayers = true,
-    ESPGuards = false,
-    ESPPets = true,
+    ESPPlayers = defaultToggle(true),
+    ESPGuards = defaultToggle(false),
+    ESPPets = defaultToggle(true),
     PlayerSize = 14,
     GuardSize = 13,
     PetSize = 13,
@@ -1642,10 +1756,10 @@ local ESPConfig = {
     TargetFolders = { "WildPets", "PetsGame", "Guardians", "Pets", "Guards", "NPCs", "Enemies", "Mobs" },
     -- Style ESP per kategori. "Any" dipakai shortcut buat set semua sekaligus.
     Styles = {
-        Any = { Size = 13, Shadow = 0.55, ShadowOffset = 2, Font = "Bold", Color = "#8AD7FF" },
-        Player = { Size = 14, Shadow = 0.55, ShadowOffset = 2, Font = "Bold", Color = "#FF5C28" },
-        Pet = { Size = 13, Shadow = 0.55, ShadowOffset = 2, Font = "Bold", Color = "#38BDF8" },
-        Guard = { Size = 13, Shadow = 0.55, ShadowOffset = 2, Font = "Bold", Color = "#FBBF24" }
+        Any = { Size = 13, Shadow = 50, ShadowOffset = 1, Font = "Bold", Color = "#8AD7FF" },
+        Player = { Size = 14, Shadow = 50, ShadowOffset = 1, Font = "Bold", Color = "#FF5C28" },
+        Pet = { Size = 13, Shadow = 50, ShadowOffset = 1, Font = "Bold", Color = "#38BDF8" },
+        Guard = { Size = 13, Shadow = 50, ShadowOffset = 1, Font = "Bold", Color = "#FBBF24" }
     }
 }
 genv.LoopXCode_ESPConfig = ESPConfig
@@ -1696,17 +1810,17 @@ local function addEspStyleInputs(section, category, label)
     section:Input({
         Title = label .. " ESP Shadow",
         Value = tostring(ESPConfig.Styles[category].Shadow),
-        Placeholder = "0.55  (0 = off, 1 = solid)",
+        Placeholder = "50  (0 = off, 100 = solid)",
         Callback = function(v)
-            setEspStyle(category, "Shadow", math.clamp(tonumber(v) or 0.55, 0, 1))
+            setEspStyle(category, "Shadow", math.clamp(tonumber(v) or 50, 0, 100))
         end
     })
     section:Input({
         Title = label .. " ESP Shadow Offset",
         Value = tostring(ESPConfig.Styles[category].ShadowOffset),
-        Placeholder = "2",
+        Placeholder = "1",
         Callback = function(v)
-            setEspStyle(category, "ShadowOffset", math.clamp(math.floor(tonumber(v) or 2), 0, 12))
+            setEspStyle(category, "ShadowOffset", math.clamp(math.floor(tonumber(v) or 1), 0, 12))
         end
     })
     section:Dropdown({
@@ -1849,8 +1963,8 @@ end
 local function applyEspStyle(entry, category)
     local style = ESPConfig.Styles[category] or ESPConfig.Styles.Any
     local size = math.max(1, math.floor(tonumber(style.Size) or 13))
-    local sh = math.clamp(tonumber(style.Shadow) or 0.55, 0, 1)
-    local so = math.clamp(math.floor(tonumber(style.ShadowOffset) or 2), 0, 12)
+    local sh = shadowAmount(style.Shadow, 50)
+    local so = math.clamp(math.floor(tonumber(style.ShadowOffset) or 1), 0, 12)
     local face = fontFaceByName(style.Font)
     local fallbackColor = (category == "Player" and ESPConfig.PlayerColor)
         or (category == "Guard" and ESPConfig.GuardColor)
@@ -2023,10 +2137,10 @@ OnCleanup(stopESP)
 local function buildHarden()
 genv.LoopXCode_HardenCfg = {
     SaveHistory = true, SaveUI = true, SaveMenu = true,
-    AutoClaimIndex = true, AutoUpgradeTraining = false, AutoUpgradeTreadmill = false, AutoTreadmill = false,
-    AntiBan = true, GodMode = false, Fly = false, JumpInfinity = false,
-    AntiKnockDown = true, Invisible = false, AntiRagdoll = true, AutoAntiSpeed = false,
-    AntiAFK = true, AntiHit = false
+    AutoClaimIndex = defaultToggle(true), AutoUpgradeTraining = false, AutoUpgradeTreadmill = false, AutoTreadmill = false,
+    AntiBan = defaultToggle(true), GodMode = false, Fly = false, JumpInfinity = false,
+    AntiKnockDown = defaultToggle(true), Invisible = false, AntiRagdoll = defaultToggle(true), AutoAntiSpeed = false,
+    AntiAFK = defaultToggle(true), AntiHit = false, SpeedBoost = false
 }
 if genv.LoopXCode_HardenCfg.AntiAFK == nil then genv.LoopXCode_HardenCfg.AntiAFK = true end
 -- config exported above; no local alias needed
@@ -2079,7 +2193,8 @@ end
 -- Anti Hit: guardian target diubah ke id bukan milik LocalPlayer supaya
 -- guardian/poseidon tidak masuk mode wake dan tidak mengejar. Set_Shake juga
 -- dimatikan supaya efek hit dari server tidak mengguncang layar.
-genv.LoopXCode_AntiHitState = { shakeOriginal = nil, cache = {}, hitConnections = nil }
+genv.LoopXCode_AntiHitState = { shakeOriginal = nil, cache = {}, hitConnections = nil, alerts = {}, changeStateInstalled = false }
+genv.LoopXCode_AntiHitActive = false
 genv.LoopXCode_PacifyGuardian = function(model)
     if not model or not model.Parent then return end
     local mine = LocalPlayer.UserId
@@ -2120,9 +2235,28 @@ genv.LoopXCode_CollectGuardians = function()
     return found
 end
 
--- GuardianHit dikirim server, jadi client nggak bisa mengubah keputusan chase.
--- Yang BISA dilakukan: putuskan listener efek hit di client supaya char nggak
--- di-launch/flash, lalu pasangkan kembali kalau Anti Hit dimatikan.
+-- getconnections sering nggak melihat listener script game, jadi jalur utama
+-- Anti Hit adalah memblokir ChangeState(FallingDown/Ragdoll/Physics) langsung di
+-- Humanoid. Hook ini lokal, aman untuk live-reload karena genv flag dipakai.
+local function installAntiHitStateHook(hum)
+    local state = genv.LoopXCode_AntiHitState
+    if not hum or state.changeStateInstalled then return end
+    local original = hum.ChangeState
+    if type(original) ~= "function" then return end
+    local ok, hooked = pcall(function()
+        return hookfunction(original, function(self, newState, ...)
+            if genv.LoopXCode_AntiHitActive
+                and (newState == Enum.HumanoidStateType.FallingDown
+                    or newState == Enum.HumanoidStateType.Ragdoll
+                    or newState == Enum.HumanoidStateType.Physics) then
+                return true
+            end
+            return original(self, newState, ...)
+        end)
+    end)
+    if ok and hooked then state.changeStateInstalled = true end
+end
+
 local function suppressGuardianHit()
     local state = genv.LoopXCode_AntiHitState
     if state.hitConnections then return end
@@ -2155,17 +2289,54 @@ task.spawn(function()
     local nextScan = 0
     while genv.LoopXCode_HardenAlive() do
         if genv.LoopXCode_HardenCfg.AntiHit then
+            local state = genv.LoopXCode_AntiHitState
+            local char = LocalPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local root = char and char:FindFirstChild("HumanoidRootPart")
             pcall(function() LocalPlayer:SetAttribute("Set_Shake", false) end)
+            installAntiHitStateHook(hum)
+
+            -- Guard cepat: kalau efek hit tetap sempat masuk, batalkan
+            -- launch/angular velocity dan paksa kembali ke state Running.
+            if hum and root then
+                pcall(function()
+                    local st = hum:GetState()
+                    if st == Enum.HumanoidStateType.FallingDown
+                        or st == Enum.HumanoidStateType.Ragdoll
+                        or st == Enum.HumanoidStateType.Physics then
+                        hum:ChangeState(Enum.HumanoidStateType.Running)
+                    end
+                    local v = root.AssemblyLinearVelocity
+                    if v.Y > 35 or v.Y < -35 then
+                        root.AssemblyLinearVelocity = Vector3.new(v.X, 0, v.Z)
+                    end
+                    local av = root.AssemblyAngularVelocity
+                    if av.Magnitude > 6 then root.AssemblyAngularVelocity = Vector3.new(0, 0, 0) end
+                end)
+            end
+
             local now = os.clock()
             if now >= nextScan then
                 nextScan = now + 0.65
-                genv.LoopXCode_AntiHitState.cache = genv.LoopXCode_CollectGuardians()
+                state.cache = genv.LoopXCode_CollectGuardians()
+                pcall(function()
+                    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+                    if not pg then return end
+                    for _, o in ipairs(pg:GetDescendants()) do
+                        if o:IsA("TextLabel") and tostring(o.Text):find("CAUGHT BY THE GUARDIAN", 1, true) then
+                            state.alerts[o] = true
+                            o.Visible = false
+                            o.BackgroundTransparency = 1
+                        end
+                    end
+                end)
             end
-            for guardian in pairs(genv.LoopXCode_AntiHitState.cache) do
-                genv.LoopXCode_PacifyGuardian(guardian)
+            for alert in pairs(state.alerts) do
+                if alert.Parent then pcall(function() alert.Visible = false end) else state.alerts[alert] = nil end
             end
+            for guardian in pairs(state.cache) do genv.LoopXCode_PacifyGuardian(guardian) end
         end
-        task.wait(0.12)
+        task.wait(0.02)
     end
 end)
 
@@ -2281,7 +2452,8 @@ genv.LoopXCode_HardenSave = function()
             Fly = genv.LoopXCode_HardenCfg.Fly, JumpInfinity = genv.LoopXCode_HardenCfg.JumpInfinity,
             AntiKnockDown = genv.LoopXCode_HardenCfg.AntiKnockDown, Invisible = genv.LoopXCode_HardenCfg.Invisible,
             AntiRagdoll = genv.LoopXCode_HardenCfg.AntiRagdoll, AutoAntiSpeed = genv.LoopXCode_HardenCfg.AutoAntiSpeed,
-            AntiAFK = genv.LoopXCode_HardenCfg.AntiAFK, AntiHit = genv.LoopXCode_HardenCfg.AntiHit
+            AntiAFK = genv.LoopXCode_HardenCfg.AntiAFK, AntiHit = genv.LoopXCode_HardenCfg.AntiHit,
+            SpeedBoost = genv.LoopXCode_HardenCfg.SpeedBoost, SpeedValue = SpeedCfg.Value
         })
     end)
     if genv.LoopXCode_HardenCfg.SaveHistory and ok and type(str) == "string" then
@@ -2528,7 +2700,7 @@ do
             hInvoke(R_UP_DUMMY, "sign")
             did = true
         end
-        if did then setStatus("auto upgrade", "sign") end
+        if did then setStatus("auto upgrade pen", "sign") end
     end
 
     task.spawn(function()
@@ -2578,7 +2750,7 @@ local function setHumanoidStates(enabled)
     pcall(function()
         hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, enabled)
         hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, enabled)
-        hum:SetStateEnabled(Enum.HumanoidStateType.GetUp, enabled)
+        hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, enabled)
         hum:SetStateEnabled(Enum.HumanoidStateType.Dead, enabled)
     end)
     statesDisabled = not enabled
@@ -2621,6 +2793,17 @@ end
 
 genv.LoopXCode_HardenToggle = function(key, v)
     if genv.LoopXCode_HardenCfg[key] == nil then return end
+    if key == "SpeedBoost" then
+        local enabled = (v == true)
+        genv.LoopXCode_HardenCfg.SpeedBoost = enabled
+        SpeedCfg.Enabled = enabled
+        pcall(function()
+            local hum = currentHumanoid()
+            if hum then hum.WalkSpeed = enabled and speedTarget() or (HardenRestore.AutoAntiSpeed and HardenRestore.AutoAntiSpeed.walk or 26) end
+        end)
+        pcall(genv.LoopXCode_HardenSave)
+        return
+    end
     if key == "AntiHit" then
         local enabled = (v == true)
         local state = genv.LoopXCode_AntiHitState
@@ -2628,11 +2811,14 @@ genv.LoopXCode_HardenToggle = function(key, v)
             state.shakeOriginal = LocalPlayer:GetAttribute("Set_Shake")
         end
         genv.LoopXCode_HardenCfg.AntiHit = enabled
+        genv.LoopXCode_AntiHitActive = enabled
         if enabled then
             pcall(function() LocalPlayer:SetAttribute("Set_Shake", false) end)
+            pcall(function() installAntiHitStateHook(currentHumanoid()) end)
             pcall(suppressGuardianHit)
             for guardian in pairs(state.cache) do genv.LoopXCode_PacifyGuardian(guardian) end
         else
+            genv.LoopXCode_AntiHitActive = false
             pcall(restoreGuardianHit)
             if state.shakeOriginal ~= nil then
                 pcall(function() LocalPlayer:SetAttribute("Set_Shake", state.shakeOriginal) end)
@@ -2651,7 +2837,7 @@ genv.LoopXCode_HardenToggle = function(key, v)
     if key == "AutoUpgradeTraining" or key == "AutoUpgradeTreadmill" then
         genv.LoopXCode_HardenCfg[key] = (v == true)
         if genv.LoopXCode_HardenCfg[key] then
-            setStatus("auto upgrade", "sign")
+            setStatus("auto upgrade pen", "sign")
         elseif not StealCfg.Enabled and not ManualSteal.Active then
             setStatus("idle", "any detect")
         end
@@ -2721,7 +2907,10 @@ end
 
 local function startFly()
     if flyConn then return end
-    flyConn = RunService.Heartbeat:Connect(function()
+    -- Kalau masih naik pet, game memaksa state Seated dan WASD nggak sampai ke
+    -- fly loop. Turun dulu supaya kontrol kamera/WASD benar-benar dipakai.
+    if LocalPlayer:GetAttribute("Mount") then pcall(dismountPet) end
+    flyConn = RunService.Heartbeat:Connect(function(dt)
         if not genv.LoopXCode_HardenAlive() or not genv.LoopXCode_HardenCfg.Fly then
             stopFly()
             return
@@ -2730,6 +2919,8 @@ local function startFly()
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         local root = char and char:FindFirstChild("HumanoidRootPart")
         if not hum or not root then return end
+        if UserInputService:GetFocusedTextBox() then return end
+
         local cam = Workspace.CurrentCamera
         local dir = Vector3.new(0, 0, 0)
         if cam then
@@ -2739,20 +2930,30 @@ local function startFly()
             local right = cam.CFrame.RightVector
             local flatRight = Vector3.new(right.X, 0, right.Z)
             if flatRight.Magnitude > 0.01 then flatRight = flatRight.Unit end
-            if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir += flat end
-            if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir -= flat end
-            if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir += flatRight end
-            if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir -= flatRight end
+            if UserInputService:IsKeyDown(Enum.KeyCode.W)
+                or UserInputService:IsKeyDown(Enum.KeyCode.Up) then dir += flat end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S)
+                or UserInputService:IsKeyDown(Enum.KeyCode.Down) then dir -= flat end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D)
+                or UserInputService:IsKeyDown(Enum.KeyCode.Right) then dir += flatRight end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A)
+                or UserInputService:IsKeyDown(Enum.KeyCode.Left) then dir -= flatRight end
         end
         if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.new(0, 1, 0) end
         if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
-            or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
+            or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
+            or UserInputService:IsKeyDown(Enum.KeyCode.Q) then
             dir -= Vector3.new(0, 1, 0)
         end
         if dir.Magnitude > 0 then dir = dir.Unit end
+
+        local speed = math.max(60, math.min(500, speedTarget()))
         pcall(function()
             hum.PlatformStand = true
-            root.AssemblyLinearVelocity = dir * 95
+            root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            if dir.Magnitude > 0 then
+                root.CFrame = root.CFrame + dir * speed * math.min(dt or 0.016, 0.05)
+            end
         end)
     end)
 end
@@ -2802,7 +3003,7 @@ task.spawn(function()
                     local st = hum:GetState()
                     if st == Enum.HumanoidStateType.FallingDown
                         or st == Enum.HumanoidStateType.Ragdoll
-                        or st == Enum.HumanoidStateType.GetUp then
+                        or st == Enum.HumanoidStateType.GettingUp then
                         hum:ChangeState(Enum.HumanoidStateType.Running)
                     end
                     hum.PlatformStand = false
@@ -2849,7 +3050,8 @@ task.spawn(function()
             end
             if hum then
                 pcall(function()
-                    if hum.WalkSpeed > 300 then hum.WalkSpeed = 300 end
+                    local cap = (SpeedCfg.Enabled and speedTarget() > 300) and speedTarget() or 300
+                    if hum.WalkSpeed > cap then hum.WalkSpeed = cap end
                     if hum.JumpPower > 900 then hum.JumpPower = 900 end
                 end)
             end
@@ -2859,8 +3061,16 @@ task.spawn(function()
             end
         end
 
+        -- Speed Boost: paksa kecepatan menu dipakai juga saat naik pet.
+        if SpeedCfg.Enabled and hum and not genv.LoopXCode_HardenCfg.Fly then
+            pcall(function()
+                local target = speedTarget()
+                if hum.WalkSpeed < target then hum.WalkSpeed = target end
+            end)
+        end
+
         -- Auto Anti Speed: reset ke kecepatan normal (bukan math.huge).
-        if genv.LoopXCode_HardenCfg.AutoAntiSpeed and hum and not genv.LoopXCode_HardenCfg.Fly then
+        if genv.LoopXCode_HardenCfg.AutoAntiSpeed and hum and not SpeedCfg.Enabled and not genv.LoopXCode_HardenCfg.Fly then
             pcall(function()
                 local saved = HardenRestore.AutoAntiSpeed
                 hum.WalkSpeed = saved and saved.walk or 16
@@ -2876,9 +3086,43 @@ LocalPlayer.CharacterAdded:Connect(function()
         HardenRestore[key] = HardenCaptureStats()
     end
     jumpLevel = 0
+    genv.LoopXCode_AntiHitState.changeStateInstalled = false
+    if genv.LoopXCode_HardenCfg.AntiHit then
+        pcall(function() installAntiHitStateHook(currentHumanoid()) end)
+    end
 end)
 end
 buildHarden()
+
+-- Tes funktion Anti Hit: simulasikan efek GuardianHit (FallingDown + launch),
+-- lalu cek apakah state dan velocity sudah dinetralisir dalam 0.8 detik.
+genv.LoopXCode_TestAntiHit = function()
+    local prev = genv.LoopXCode_HardenCfg.AntiHit
+    pcall(function() genv.LoopXCode_HardenToggle("AntiHit", true) end)
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not hum or not root then return { passed = false, reason = "no character" } end
+    pcall(function()
+        hum:ChangeState(Enum.HumanoidStateType.FallingDown)
+        root.AssemblyLinearVelocity = Vector3.new(0, 135, 0)
+        root.AssemblyAngularVelocity = Vector3.new(14, 6, 14)
+    end)
+    task.wait(0.8)
+    local st = hum:GetState()
+    local v = root.AssemblyLinearVelocity
+    local av = root.AssemblyAngularVelocity
+    local badState = (st == Enum.HumanoidStateType.FallingDown
+        or st == Enum.HumanoidStateType.Ragdoll
+        or st == Enum.HumanoidStateType.Physics)
+    local result = {
+        passed = (not badState) and math.abs(v.Y) < 40 and av.Magnitude < 6,
+        state = tostring(st), velY = v.Y, angular = av.Magnitude,
+        active = genv.LoopXCode_AntiHitActive
+    }
+    pcall(function() genv.LoopXCode_HardenToggle("AntiHit", prev) end)
+    return result
+end
 
 -- =====================================================================
 -- 5. DAFTARKAN SEMUA KOMPONEN KE REGISTRY
@@ -2903,16 +3147,16 @@ do
     local keys = {
         "AutoClaimIndex", "AutoUpgradeTraining", "AutoUpgradeTreadmill", "AutoTreadmill",
         "AntiBan", "AntiAFK", "GodMode", "Fly", "JumpInfinity", "AntiKnockDown",
-        "Invisible", "AntiRagdoll", "AutoAntiSpeed", "AntiHit"
+        "Invisible", "AntiRagdoll", "AutoAntiSpeed", "AntiHit", "SpeedBoost"
     }
     genv.LoopXCode_HardenFeatureKeys = keys
     local labels = {
-        AutoClaimIndex = "Auto Claim Index", AutoUpgradeTraining = "Auto Upgrade",
+        AutoClaimIndex = "Auto Claim Index", AutoUpgradeTraining = "Auto Upgrade Pen",
         AutoUpgradeTreadmill = "Auto Upgrade Treadmill", AutoTreadmill = "Auto Treadmill",
         AntiBan = "Anti Ban", AntiAFK = "Anti AFK", GodMode = "God Mode",
         Fly = "Fly", JumpInfinity = "Jump Infinity", AntiKnockDown = "Anti Knock Down",
         Invisible = "Invisible", AntiRagdoll = "Anti Ragdoll", AutoAntiSpeed = "Auto Anti Speed",
-        AntiHit = "Anti Hit"
+        AntiHit = "Anti Hit", SpeedBoost = "Speed Boost"
     }
     genv.LoopXCode_HardenFeatureLabels = labels
     for _, key in ipairs(keys) do
@@ -2973,6 +3217,7 @@ local function saveNamedConfig(name)
             Rarities = jsonSafe(SellCfg.Rarities)
         },
         MiscCfg = jsonSafe(MiscCfg),
+        SpeedCfg = { Enabled = SpeedCfg.Enabled, Value = SpeedCfg.Value },
         HudCfg = jsonSafe(HudCfg),
         ESPConfig = jsonSafe(ESPConfig),
         HardenCfg = harden,
@@ -3032,13 +3277,17 @@ local function loadNamedConfig(name)
     local misc = type(data.MiscCfg) == "table" and data.MiscCfg or {}
     MiscCfg.MenuBackground = misc.MenuBackground ~= false
     MiscCfg.AutoEquipBestSpeed = misc.AutoEquipBestSpeed ~= false
+    MiscCfg.AutoEquipBestPen = misc.AutoEquipBestPen == true
     pcall(function() genv.LoopXCode_SetMenuBackground(MiscCfg.MenuBackground) end)
     pcall(function() genv.LoopXCode_SetAutoEquip(MiscCfg.AutoEquipBestSpeed, false) end)
+    pcall(function() genv.LoopXCode_SetAutoEquipBestPen(MiscCfg.AutoEquipBestPen, false) end)
 
     local h = type(data.HudCfg) == "table" and data.HudCfg or {}
     for _, key in ipairs({ "Width", "Height", "TextSize", "Gap", "Shadow", "ShadowOffset", "Font", "LogoFont", "X", "Y" }) do
         if h[key] ~= nil then HudCfg[key] = h[key] end
     end
+    HudCfg.Shadow = shadowAmount(HudCfg.Shadow, 50) * 100
+    HudCfg.ShadowOffset = math.clamp(math.floor(tonumber(HudCfg.ShadowOffset) or 1), 0, 12)
 
     local e = type(data.ESPConfig) == "table" and data.ESPConfig or {}
     for _, key in ipairs({ "ESPPets", "ESPGuards", "ESPPlayers", "ShowInfo", "UpdateInterval", "ScanInterval" }) do
@@ -3055,9 +3304,14 @@ local function loadNamedConfig(name)
                 for _, key in ipairs({ "Size", "Shadow", "ShadowOffset", "Font", "Color" }) do
                     if src[key] ~= nil then dst[key] = src[key] end
                 end
+                dst.Shadow = shadowAmount(dst.Shadow, 50) * 100
+                dst.ShadowOffset = math.clamp(math.floor(tonumber(dst.ShadowOffset) or 1), 0, 12)
             end
         end
     end
+    local sp = type(data.SpeedCfg) == "table" and data.SpeedCfg or {}
+    if tonumber(sp.Value) then SpeedCfg.Value = math.max(16, math.min(1e6, tonumber(sp.Value))) end
+
     local hd = type(data.HardenCfg) == "table" and data.HardenCfg or {}
     for _, key in ipairs(genv.LoopXCode_HardenFeatureKeys) do
         if hd[key] ~= nil then
@@ -3078,9 +3332,10 @@ local function loadNamedConfig(name)
     setHandleValue(UIHandles["Catch Rarity (tier)"], StealCfg.Rarity)
     setHandleValue(UIHandles["Catch Zone"], StealCfg.Zone)
     setHandleValue(UIHandles["Min Income"], StealCfg.CustomIncome)
-    setHandleValue(UIHandles["Walk Speed"], tostring(StealCfg.WalkSpeed))
+    setHandleValue(UIHandles["Walk Speed"], tostring(SpeedCfg.Value))
     setHandleValue(UIHandles["Weak Lasso Catch"], StealCfg.WeakAllowed)
     setHandleValue(UIHandles["Auto Equip Best Speed"], MiscCfg.AutoEquipBestSpeed)
+    setHandleValue(UIHandles["Auto Equip Best Pen"], MiscCfg.AutoEquipBestPen)
     setHandleValue(UIHandles["Auto Sell Pet"], SellCfg.Enabled)
     setHandleValue(UIHandles["Sell Interval"], tostring(SellCfg.Interval))
     setHandleValue(UIHandles["Menu Background"], MiscCfg.MenuBackground)
@@ -3117,20 +3372,44 @@ genv.LoopXCode_LoadConfig = loadNamedConfig
 local function buildWindUI()
     -- Buang semua ScreenGui WindUI sisa run lama SEBELUM load, supaya
     -- save-state tidak menempel ke ScreenGui mati dan CreateWindow tidak error.
-    for _, o in ipairs(ParentGui:GetChildren()) do
-        local n = tostring(o.Name or ""):lower()
-        if o:IsA("ScreenGui") and (n == "windui" or n:find("windui/", 1, true)) then
-            pcall(function() o:Destroy() end)
+    for _, root in ipairs(cleanupRoots) do
+        if root then
+            for _, o in ipairs(root:GetChildren()) do
+                local n = tostring(o.Name or ""):lower()
+                if o:IsA("ScreenGui") and (n == "windui" or n:find("windui/", 1, true)) then
+                    pcall(function() o:Destroy() end)
+                end
+            end
         end
     end
 
-    local okLib, lib = pcall(function()
-        local src = winduiSource
-        if type(src) ~= "string" or src == "" then
-            src = game:HttpGet(WINDUI_URL, true)
+    local okLib, lib
+    do
+        -- WindUI terbaru kadang memanggil cloneref(nil); executor menerima
+        -- userdata saja. Bungkus sebentar saat library dimuat supaya load aman,
+        -- lalu kembalikan fungsi aslinya setelah selesai.
+        local originalCloneref = cloneref
+        local function safeCloneref(value)
+            if typeof(value) == "userdata" then
+                if originalCloneref then return originalCloneref(value) end
+                return value
+            end
+            return value
         end
-        return loadstring(src)()
-    end)
+        local okSet, oldCloneref = pcall(function()
+            local old = cloneref
+            cloneref = safeCloneref
+            return old
+        end)
+        okLib, lib = pcall(function()
+            local src = winduiSource
+            if type(src) ~= "string" or src == "" then
+                src = game:HttpGet(WINDUI_URL, true)
+            end
+            return loadstring(src)()
+        end)
+        if okSet then pcall(function() cloneref = oldCloneref end) end
+    end
 
     if not (okLib and type(lib) == "table" and type(lib.CreateWindow) == "function") then
         closeLoadingOverlay()
@@ -3657,18 +3936,18 @@ local function buildWindUI()
     HudSection:Input({
         Title = "HUD Shadow",
         Value = tostring(HudCfg.Shadow),
-        Placeholder = "0.55  (0 = off, 1 = solid)",
+        Placeholder = "50  (0 = off, 100 = solid)",
         Callback = function(v)
-            HudCfg.Shadow = tonumber(v) or HudCfg.Shadow
+            HudCfg.Shadow = math.clamp(tonumber(v) or 50, 0, 100)
             pcall(function() genv.LoopXCode_ApplyHudLayout() end)
         end
     })
     HudSection:Input({
         Title = "HUD Shadow Offset",
         Value = tostring(HudCfg.ShadowOffset),
-        Placeholder = "2",
+        Placeholder = "1",
         Callback = function(v)
-            HudCfg.ShadowOffset = tonumber(v) or HudCfg.ShadowOffset
+            HudCfg.ShadowOffset = math.clamp(math.floor(tonumber(v) or 1), 0, 12)
             pcall(function() genv.LoopXCode_ApplyHudLayout() end)
         end
     })
@@ -3729,20 +4008,22 @@ local function buildWindUI()
     local incomeInput = CaptureSection:Input({
         Title = "Min Income",
         Value = StealCfg.CustomIncome,
-        Placeholder = "5k / 30b / 50t  (blank = any)",
+        Placeholder = "1S 20M 30K 50B 1T  (blank = any)",
         Callback = function(v) StealCfg.CustomIncome = tostring(v or "") end
     })
     UIHandles["Min Income"] = incomeInput
     local walkSpeedInput = CaptureSection:Input({
         Title = "Walk Speed",
-        Value = tostring(StealCfg.WalkSpeed),
-        Placeholder = "400",
-        Desc = "Walk speed used by Auto Catch in studs/sec (16-400)",
+        Value = tostring(SpeedCfg.Value),
+        Placeholder = "50000",
+        Desc = "Boost on-foot and mounted movement to this speed (16-500)",
         Callback = function(v)
             local n = tonumber(v)
-            if not n then n = configuredWalkSpeed(400) end
-            n = math.max(16, math.min(400, n))
-            StealCfg.WalkSpeed = n
+            if not n then n = SpeedCfg.Value end
+            n = math.max(16, math.min(1e6, n))
+            SpeedCfg.Value = n
+            StealCfg.WalkSpeed = math.max(16, math.min(400, n))
+            if n > 16 then pcall(function() genv.LoopXCode_HardenToggle("SpeedBoost", true) end) end
         end
     })
     UIHandles["Walk Speed"] = walkSpeedInput
@@ -3751,7 +4032,7 @@ local function buildWindUI()
     pcall(function()
         local box = nil
         for _, o in ipairs(gethui():GetDescendants()) do
-            if o:IsA("TextBox") and tostring(o.PlaceholderText):find("5k", 1, true) then
+            if o:IsA("TextBox") and tostring(o.PlaceholderText):find("20M", 1, true) then
                 box = o
                 break
             end
@@ -3763,7 +4044,7 @@ local function buildWindUI()
         end
         local speedBox = nil
         for _, o in ipairs(gethui():GetDescendants()) do
-            if o:IsA("TextBox") and (tostring(o.PlaceholderText) == "400" or tostring(o.Text) == tostring(StealCfg.WalkSpeed)) then
+            if o:IsA("TextBox") and (tostring(o.PlaceholderText) == "50000" or tostring(o.Text) == tostring(SpeedCfg.Value)) then
                 local okTitle, title = pcall(function()
                     local p = o.Parent
                     for _ = 1, 6 do
@@ -3782,8 +4063,10 @@ local function buildWindUI()
             speedBox:GetPropertyChangedSignal("Text"):Connect(function()
                 local n = tonumber(speedBox.Text)
                 if not n then return end
-                n = math.max(16, math.min(400, n))
-                StealCfg.WalkSpeed = n
+                n = math.max(16, math.min(1e6, n))
+                SpeedCfg.Value = n
+                StealCfg.WalkSpeed = math.max(16, math.min(400, n))
+                if n > 16 then pcall(function() genv.LoopXCode_HardenToggle("SpeedBoost", true) end) end
             end)
         end
     end)
@@ -3805,7 +4088,7 @@ local function buildWindUI()
     local autoEquipToggle = CaptureSection:Toggle({
         Title = "Auto Equip Best Speed",
         Desc = "ON = ride the fastest pet / OFF = dismount (auto off when Auto Treadmill is ON)",
-        Value = true,
+        Value = defaultToggle(true),
         Callback = function(v) applyAutoEquip(v, true) end
     })
     genv.LoopXCode_AutoEquipToggle = autoEquipToggle
@@ -3823,7 +4106,43 @@ local function buildWindUI()
         end)
         if not didSet then applyAutoEquip(v, spawnAction) end
     end
-    task.spawn(equipBestSpeed)
+    if genv.LoopXCode_AutoEquipV2 then task.spawn(equipBestSpeed) end
+
+    local function applyAutoEquipBestPen(v, spawnAction)
+        v = (v == true)
+        MiscCfg.AutoEquipBestPen = v
+        if spawnAction ~= false and v then
+            task.spawn(function()
+                if equipBestPen() then setStatus("auto equip best pen", "ready") end
+            end)
+        elseif spawnAction ~= false and not v
+            and not StealCfg.Enabled and not ManualSteal.Active then
+            setStatus("idle", "any detect")
+        end
+    end
+    local autoEquipPenToggle = CaptureSection:Toggle({
+        Title = "Auto Equip Best Pen",
+        Desc = "Automatically keep the best pets in the pen",
+        Value = MiscCfg.AutoEquipBestPen,
+        Callback = function(v) applyAutoEquipBestPen(v, true) end
+    })
+    UIHandles["Auto Equip Best Pen"] = autoEquipPenToggle
+    genv.LoopXCode_AutoEquipBestPenToggle = autoEquipPenToggle
+    genv.LoopXCode_SetAutoEquipBestPen = function(v, spawnAction)
+        v = (v == true)
+        local didSet = false
+        pcall(function()
+            if autoEquipPenToggle and type(autoEquipPenToggle.Set) == "function" then
+                autoEquipPenToggle:Set(v)
+                didSet = true
+            elseif autoEquipPenToggle and type(autoEquipPenToggle.SetValue) == "function" then
+                autoEquipPenToggle:SetValue(v)
+                didSet = true
+            end
+        end)
+        if not didSet then applyAutoEquipBestPen(v, spawnAction) end
+    end
+    if MiscCfg.AutoEquipBestPen then task.spawn(equipBestPen) end
 
     -- ---------- Experimen: paksa tangkap walau lasso lemah ----------
     local ExperimentSection = trackSection("Experimen", Tab:Section({ Title = "Experimen", Opened = true }))
@@ -4068,6 +4387,17 @@ local function buildWindUI()
     -- teks tetap kebaca karena ada bayangan teks hitam di belakangnya.
     -- Fungsi terpisah supaya register lokal WindUI induk nggak jebol.
     local function buildFloatingLogo()
+    -- HUD punya ScreenGui sendiri dengan DisplayOrder di bawah WindUI supaya
+    -- kalau menu terbuka, HUD nggak nimpuk menu. Toggle logo tetap di atas.
+    local HudGui = Instance.new("ScreenGui")
+    HudGui.Name = "LXC_HudGui"
+    HudGui.ResetOnSpawn = false
+    HudGui.IgnoreGuiInset = true
+    HudGui.DisplayOrder = -100000
+    HudGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    HudGui.Enabled = true
+    HudGui.Parent = ParentGui
+
     local FloatGui = Instance.new("ScreenGui")
     FloatGui.Name = "LXC_ToggleGui"
     FloatGui.ResetOnSpawn = false
@@ -4148,7 +4478,7 @@ local function buildWindUI()
     HudShadow.TextYAlignment = Enum.TextYAlignment.Center
     HudShadow.Text = hudPlainText()
     HudShadow.Active = false
-    HudShadow.Parent = FloatGui
+    HudShadow.Parent = HudGui
 
     local FloatStatus = Instance.new("TextLabel")
     FloatStatus.Name = "HUD"
@@ -4164,13 +4494,13 @@ local function buildWindUI()
     FloatStatus.RichText = true
     FloatStatus.Text = hudRichText()
     FloatStatus.Active = true
-    FloatStatus.Parent = FloatGui
+    FloatStatus.Parent = HudGui
 
     local function clampHudPos(pos)
         local w = math.max(1, math.floor(tonumber(HudCfg.Width) or 720))
         local h = math.max(1, math.floor(tonumber(HudCfg.Height) or 108))
         local gap = math.max(0, math.floor(tonumber(HudCfg.Gap) or 10))
-        local sx, sy = FloatGui.AbsoluteSize.X, FloatGui.AbsoluteSize.Y
+        local sx, sy = HudGui.AbsoluteSize.X, HudGui.AbsoluteSize.Y
         if sx <= 0 or sy <= 0 then return pos end
         local left = math.clamp(pos.X.Offset + pos.X.Scale * sx, 0, math.max(0, sx - w))
         local top = math.clamp(pos.Y.Offset + pos.Y.Scale * sy, 0, math.max(0, sy - h))
@@ -4179,7 +4509,7 @@ local function buildWindUI()
         local finalPos = UDim2.new(0.5, left - sx / 2, 0, top)
         -- Shadow ikut HUD saat drag, bukan cuma saat applyHudLayout dipanggil.
         if HudShadow then
-            local so = math.clamp(math.floor(tonumber(HudCfg.ShadowOffset) or 2), 0, 12)
+            local so = math.clamp(math.floor(tonumber(HudCfg.ShadowOffset) or 1), 0, 12)
             pcall(function()
                 HudShadow.Position = UDim2.new(finalPos.X.Scale, finalPos.X.Offset + so, finalPos.Y.Scale, finalPos.Y.Offset + so)
             end)
@@ -4193,10 +4523,10 @@ local function buildWindUI()
         local h = math.max(1, math.floor(tonumber(HudCfg.Height) or 108))
         local ts = math.max(1, math.floor(tonumber(HudCfg.TextSize) or 18))
         local gap = math.max(0, math.floor(tonumber(HudCfg.Gap) or 10))
-        local sh = math.clamp(tonumber(HudCfg.Shadow) or 0.55, 0, 1)
-        local so = math.clamp(math.floor(tonumber(HudCfg.ShadowOffset) or 2), 0, 12)
+        local sh = shadowAmount(HudCfg.Shadow, 50)
+        local so = math.clamp(math.floor(tonumber(HudCfg.ShadowOffset) or 1), 0, 12)
         HudCfg.Width, HudCfg.Height, HudCfg.TextSize, HudCfg.Gap = w, h, ts, gap
-        HudCfg.Shadow, HudCfg.ShadowOffset = sh, so
+        HudCfg.ShadowOffset = so
         HudCfg.X, HudCfg.Y = tonumber(HudCfg.X) or 0, tonumber(HudCfg.Y) or 0
         pcall(function()
             local hudFace = fontFaceByName(HudCfg.Font)
@@ -4279,7 +4609,10 @@ local function buildWindUI()
         end
     end)
 
-    OnCleanup(function() pcall(function() FloatGui:Destroy() end) end)
+    OnCleanup(function()
+        pcall(function() FloatGui:Destroy() end)
+        pcall(function() HudGui:Destroy() end)
+    end)
     end
     -- WindUI bisa menutup window saat state lama dipulihkan. Buka lagi di akhir
     -- setelah semua tab jadi, lalu paksa font + wallpaper sinkron.
