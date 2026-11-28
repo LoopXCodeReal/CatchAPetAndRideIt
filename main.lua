@@ -19,6 +19,7 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local Stats = game:GetService("Stats")
+local Lighting = game:GetService("Lighting")
 local CoreGui = game:GetService("CoreGui")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
@@ -33,13 +34,15 @@ local genv = (type(getgenv) == "function") and getgenv() or _G
 genv.LoopXCode_RunEpoch = (tonumber(genv.LoopXCode_RunEpoch) or 0) + 1
 local RUN_EPOCH = genv.LoopXCode_RunEpoch
 
--- First run: semua toggle mulai OFF. Config yang tersimpan tetap bisa
--- menghidupkan lagi lewat Load Config (setHandleValue menimpa toggle UI).
+-- First run: toggle yang diminta daddy nyala otomatis; sisanya OFF.
+-- Config tersimpan tidak auto-load; hanya dipakai saat tombol Load Config.
 local FIRST_RUN_OFF = true
+local HARDEN_DEFAULT_ON = {
+    AutoClaimIndex = true, AntiBan = true, AntiAFK = true,
+    AntiKnockDown = true, AntiRagdoll = true
+}
 local function defaultToggle(state, alwaysOn)
-    -- Anti Ban / Anti AFK / Anti Ragdoll adalah perlindungan dasar: tetap ON
-    -- walaupun FIRST_RUN_OFF menyuruh fitur lain mulai dari OFF.
-    if alwaysOn then return true end
+    if alwaysOn == true then return true end
     if FIRST_RUN_OFF then return false end
     return state == true
 end
@@ -139,7 +142,6 @@ local LANG_TEXT = {
     ["Find Pet"] = "Cari Pet", ["Biome / Map"] = "Biome / Map",
     ["Refresh Finder"] = "Segarkan Pencari", ["Apply Safe Fonts"] = "Terapkan Font Aman",
     ["Menu Background"] = "Latar Menu", ["Skip Tutorial"] = "Lewati Tutorial",
-    ["Enable ESP"] = "Aktifkan ESP",
     ["Pet ESP"] = "ESP Pet", ["Guardian ESP"] = "ESP Penjaga", ["Player ESP"] = "ESP Pemain",
     ["ESP Info"] = "Info ESP", ["ESP Range"] = "Jarak ESP",
     ["Save History"] = "Simpan Riwayat", ["Save UI"] = "Simpan UI", ["Save Menu"] = "Simpan Menu",
@@ -160,7 +162,14 @@ local LANG_TEXT = {
     ["No lasso-safe turkey found"] = "Tidak ada turkey yang sesuai lasso",
     ["Farm: waiting for turkey"] = "Farm: menunggu turkey",
     ["Turkey Coins"] = "Koin Turkey", ["Coins gained"] = "Koin didapat",
-    ["Anti Hit"] = "Anti Serangan", ["Auto Sell Pet"] = "Jual Pet Otomatis",
+    ["No Clip / Tembus Tembok"] = "Tembus Tembok", ["Tembus Tembok"] = "Tembus Tembok",
+    ["Pass through walls without triggering SpawnSafety"] = "Tembus tembok tanpa memicu SpawnSafety",
+    ["Auto Sell Pet"] = "Jual Pet Otomatis",
+    ["Unlock FPS"] = "Buka FPS", ["FPS Cap"] = "Batas FPS",
+    ["Custom FPS cap used by Unlock FPS / Auto Low"] = "Batas FPS kustom untuk Buka FPS / Auto Low",
+    ["1-1000  (dipakai Unlock FPS / Auto Low)"] = "1-1000  (dipakai Buka FPS / Auto Low)",
+    ["Unlock FPS 240"] = "Buka FPS", ["Auto Low / Performance"] = "Auto Low / Performa",
+    ["Hide Your Pet in Pen"] = "Sembunyikan Pet di Pen", ["Respawn"] = "Respawn", ["Hide HUD"] = "Sembunyikan HUD",
     ["Sell Rarities"] = "Rarity Dijual", ["Sell Now"] = "Jual Sekarang",
     ["Search Features"] = "Cari Fitur", ["Search all features"] = "Cari semua fitur",
     ["Auto Sell"] = "Jual Otomatis", ["Sell Interval"] = "Interval Jual",
@@ -169,10 +178,6 @@ local LANG_TEXT = {
     ["Fly"] = "Terbang", ["Jump Infinity"] = "Lompat Tak Terbatas",
     ["Anti Knock Down"] = "Anti Jatuh", ["Invisible"] = "Tidak Terlihat",
     ["Anti Ragdoll"] = "Anti Ragdoll", ["Auto Anti Speed"] = "Anti Kecepatan Otomatis",
-    ["Hide Your Pet in Pen"] = "Sembunyikan Pet di Kandang",
-    ["Low Graphics"] = "Grafik Rendah",
-    ["FPS Unlock"] = "Buka FPS",
-    ["FPS Cap"] = "Batas FPS",
 
     ["Approach, lasso, reel, and secure the pet"] = "Dekati, laso, reel, dan amankan pet",
     ["ON = ride the fastest pet / OFF = dismount (auto off when Auto Treadmill is ON)"] =
@@ -295,7 +300,8 @@ pcall(function()
         for _, k in ipairs({
             "AutoClaimIndex", "AutoUpgradeTraining", "AutoUpgradeTreadmill", "AutoTreadmill", "AdminEventTreadmill", "AntiBan", "AntiAFK",
             "GodMode", "Fly", "JumpInfinity", "AntiKnockDown", "Invisible",
-            "AntiRagdoll", "AutoAntiSpeed", "AntiHit", "SpeedBoost"
+            "AntiRagdoll", "AutoAntiSpeed", "AntiHit", "SpeedBoost",
+            "UnlockFPS", "AutoLow", "HidePetPen"
         }) do prev[k] = false end
     end
 end)
@@ -501,9 +507,9 @@ end
 -- =====================================================================
 local UIItems = {}
 
-local function AddToggle(name, defaultState, callback, group)
+local function AddToggle(name, defaultState, callback, group, alwaysOn)
     UIItems[#UIItems + 1] = {
-        Kind = "Toggle", Name = name, Default = defaultToggle(defaultState),
+        Kind = "Toggle", Name = name, Default = defaultToggle(defaultState, alwaysOn),
         Callback = callback, Group = group or "Misc"
     }
 end
@@ -511,6 +517,13 @@ end
 local function AddDropdown(name, options, defaultText, callback, group)
     UIItems[#UIItems + 1] = {
         Kind = "Dropdown", Name = name, Values = options, Default = defaultText,
+        Callback = callback, Group = group or "Misc"
+    }
+end
+
+local function AddInput(name, value, placeholder, callback, group)
+    UIItems[#UIItems + 1] = {
+        Kind = "Input", Name = name, Default = value, Placeholder = placeholder,
         Callback = callback, Group = group or "Misc"
     }
 end
@@ -538,6 +551,85 @@ genv.LoopXCode_SetUIValue = setUIValue
 local RemoteFolder = ReplicatedStorage:WaitForChild("Remotes")
 local ModuleFolder = ReplicatedStorage:WaitForChild("Module")
 local WildFolder = Workspace:WaitForChild("WildPets")
+
+-- Anti Ban: semua argumen remote yang dikirim hub dibersihkan dulu. Server
+-- menolak angka NaN/infinite, string terlalu panjang, dan tabel bersarang yang
+-- cacat; wrapper ini mencegah remote cacat itu pernah keluar dari client.
+local AntiBanState = { cleaned = 0, blocked = 0 }
+genv.LoopXCode_AntiBanState = function()
+    return {
+        enabled = type(genv.LoopXCode_HardenCfg) == "table"
+            and genv.LoopXCode_HardenCfg.AntiBan == true,
+        cleaned = AntiBanState.cleaned,
+        blocked = AntiBanState.blocked
+    }
+end
+local function antiBanClean(value, depth)
+    depth = depth or 0
+    local robloxType = typeof and typeof(value) or nil
+    if robloxType and robloxType ~= "userdata" then return value end
+    local kind = type(value)
+    if kind == "number" then
+        if value ~= value or value == math.huge or value == -math.huge
+            or math.abs(value) > 1e15 then
+            AntiBanState.blocked += 1
+            return 0
+        end
+        AntiBanState.cleaned += 1
+        return value
+    elseif kind == "string" then
+        if #value > 4096 then
+            AntiBanState.blocked += 1
+            return value:sub(1, 4096)
+        end
+        AntiBanState.cleaned += 1
+        return value
+    elseif kind == "table" then
+        if depth >= 6 then
+            AntiBanState.blocked += 1
+            return nil
+        end
+        local out, count = {}, 0
+        for k, v in pairs(value) do
+            count += 1
+            if count > 1000 then AntiBanState.blocked += 1 break end
+            local ck = antiBanClean(k, depth + 1)
+            local cv = antiBanClean(v, depth + 1)
+            if ck ~= nil and cv ~= nil then out[ck] = cv end
+        end
+        return out
+    elseif kind == "function" or kind == "thread" or kind == "userdata" then
+        AntiBanState.blocked += 1
+        return nil
+    end
+    return value
+end
+local function safeArgs(...)
+    local cfg = genv.LoopXCode_HardenCfg
+    if type(cfg) == "table" and cfg.AntiBan == false then return ... end
+    local packed = table.pack(...)
+    for i = 1, packed.n do packed[i] = antiBanClean(packed[i], 0) end
+    return table.unpack(packed, 1, packed.n)
+end
+genv.LoopXCode_SafeRemoteArgs = safeArgs
+local function banSafeInvoke(remote, ...)
+    if not remote or not remote:IsA("RemoteFunction") then return nil end
+    local args = table.pack(safeArgs(...))
+    local ok, result = pcall(function()
+        return remote:InvokeServer(table.unpack(args, 1, args.n))
+    end)
+    if ok then return result end
+    return nil
+end
+local function banSafeFire(remote, ...)
+    if not remote or not remote:IsA("RemoteEvent") then return false end
+    local args = table.pack(safeArgs(...))
+    return pcall(function()
+        remote:FireServer(table.unpack(args, 1, args.n))
+    end)
+end
+genv.LoopXCode_BanSafeInvoke = banSafeInvoke
+genv.LoopXCode_BanSafeFire = banSafeFire
 local PC = require(ModuleFolder:WaitForChild("PetConfig"))
 local CC = require(ModuleFolder:WaitForChild("CaptureConfig"))
 local PTC = require(ModuleFolder:WaitForChild("PetTagConfig"))
@@ -591,7 +683,7 @@ genv.LoopXCode_ZoneCenters = ZONE_CENTERS
 -- Manual Steal yang sudah tested, jadi lasso tetap dicek dan pet merah
 -- (ratio < MIN_RATIO) dilewati dulu ke yang hijau/orange.
 genv.LoopXCode_FarmCfg = {
-    Enabled = false,
+    Enabled = true,
     Maps = (function()
         local list = { "Any" }
         for _, z in ipairs(ZONE_NAMES) do list[#list + 1] = z end
@@ -660,7 +752,7 @@ local R_SECURE = RemoteFolder:FindFirstChild("SecureCatch")
 -- server. Fire cancel supaya attempt berikutnya nggak ditolak terus.
 local function cancelCapture(session)
     pcall(function()
-        R_STEAL.FinishCapture:FireServer(session, false, true)
+        banSafeFire(R_STEAL.FinishCapture, session, false, true)
     end)
 end
 
@@ -675,21 +767,21 @@ local function dropStaleCarry(reason)
     genv.LoopXCode_LastDroppedCarryAt = os.clock()
     genv.LoopXCode_LastDroppedCarryReason = tostring(reason or "stale")
     pcall(function()
-        if R_STEAL.DropCarry then R_STEAL.DropCarry:FireServer() end
+        if R_STEAL.DropCarry then banSafeFire(R_STEAL.DropCarry) end
     end)
     return true
 end
 genv.LoopXCode_DropStaleCarry = dropStaleCarry
 
 local StealCfg = {
-    Enabled = false,
+    Enabled = true,
     Busy = false,
     RetryDelay = 0.7,          -- jeda antar siklus, biar game nggak nge-freeze
     Rarity = "Any",             -- tier EXACT yang dipilih; nggak ada auto-turun
     Zone = "Any",               -- map/zone EXACT yang dipilih; Any = semua map
     CustomIncome = "",     -- min income: 5k / 30b / 50t / kosong = semua
     Priority = "Any",           -- tetap Any; fokus filter cuma Rarity + Min Income
-    ReelMode = "Safe",
+    ReelMode = "Fast", -- Catch Reel sekarang FAST-only; mode Safe dihapus.
     WeakAllowed = false,      -- Experimen: boleh tangkap walau lasso kurang kuat
     WalkSpeed = 60            -- kecepatan jalan Auto Catch (default mulus, bisa diatur dari menu)
 }
@@ -754,7 +846,7 @@ genv.LoopXCode_ClampToMap = clampToMap
 
 -- Auto Sell Pet: jual otomatis pet di bag yang tier-nya dipilih (multi-select).
 local SellCfg = {
-    Enabled = false,
+    Enabled = true,
     Interval = 5,
     Rarities = {}
 }
@@ -762,14 +854,13 @@ genv.LoopXCode_SellCfg = SellCfg
 local R_SELL = RemoteFolder:FindFirstChild("SellPets")
 
 -- Ukuran HUD floating bisa diatur bebas dari menu Controls.
--- HUD ringkas secara default: cukup untuk 3 baris status tanpa menutupi tombol
--- bag/inventaris game. Batas maksimal juga dijaga di applyHudLayout.
-local HudCfg = { Width = 460, Height = 78, TextSize = 14, Gap = 6, Shadow = 50, ShadowOffset = 1, Font = "Bold", LogoFont = "Logo", X = 0, Y = 0 }
+local HudCfg = { Width = 720, Height = 108, TextSize = 18, Gap = 10, Shadow = 50, ShadowOffset = 1, Font = "Bold", LogoFont = "Logo", X = 0, Y = 0, Hidden = false }
 genv.LoopXCode_HudCfg = HudCfg
 local applyHudLayout = function() end
 genv.LoopXCode_ApplyHudLayout = function() applyHudLayout() end
+genv.LoopXCode_SetHudHidden = function() end
 
-local MiscCfg = { MenuBackground = true, AutoEquipBestSpeed = defaultToggle(true), AutoEquipBestPen = false, FpsCap = 240 }
+local MiscCfg = { MenuBackground = false, AutoEquipBestSpeed = defaultToggle(true), AutoEquipBestPen = false }
 genv.LoopXCode_MiscCfg = MiscCfg
 genv.LoopXCode_SetMenuBackground = function() end
 genv.LoopXCode_SetAutoEquipBestPen = function() end
@@ -877,9 +968,9 @@ local Pace = {
     Reel = 0.1,         -- game membatasi CapturePull ke 10 Hz
     Pull = 0.1,         -- Safe: 10 Hz, sama seperti klien asli game
     Settle = 0.08,      -- Safe: jeda setelah remote / sebelum siklus lanjut
-    FastReel = 0.05,    -- Fast: loop reel tetap 10 Hz untuk pull
+    FastReel = 0.03,    -- Fast: loop reel responsif tanpa membanjiri server
     FastPull = 0.1,     -- Fast: jangan lebih cepat dari throttle server
-    FastSettle = 0.05   -- Fast: sinkronisasi minimal
+    FastSettle = 0.03   -- Fast: sinkronisasi minimal supaya catch terasa cepat
 }
 genv.LoopXCode_Pace = Pace
 
@@ -1138,6 +1229,66 @@ local function isUncaptured(value)
     return value == nil or value == 0 or value == "0" or value == ""
 end
 
+-- Lock target Auto Catch: sekali pet dipilih, hub tetap mengejar pet itu sampai
+-- tertangkap / hilang / dua kali gagal. Ini menghentikan bolak-balik antar pet
+-- yang jaraknya hampir sama tiap kali loop scan dijalankan.
+local CatchLock = { model = nil, id = nil, fails = 0, deadline = 0, score = 0 }
+genv.LoopXCode_CatchLock = CatchLock
+local function clearCatchLock()
+    CatchLock.model, CatchLock.id, CatchLock.fails, CatchLock.deadline, CatchLock.score =
+        nil, nil, 0, 0, 0
+end
+local function lockedCatchTarget()
+    local model = CatchLock.model
+    if not model or model.Parent ~= WildFolder then clearCatchLock() return nil end
+    if os.clock() > (tonumber(CatchLock.deadline) or 0) then clearCatchLock() return nil end
+    if model:GetAttribute("CapturedBy") ~= 0 and model:GetAttribute("CapturedBy") ~= nil
+        or model:GetAttribute("Despawning") == true then
+        clearCatchLock()
+        return nil
+    end
+    local info = wildInfo(model)
+    if not info or not matchesFilter(info)
+        or (genv.LoopXCode_IsFarmTurkey and genv.LoopXCode_IsFarmTurkey(info.name)) then
+        clearCatchLock()
+        return nil
+    end
+    -- Jangan pertahankan lock pada pet yang sudah terbukti merah / sedang di-skip.
+    -- Ini bikin Auto Catch pindah target SEGERA, bukan ngejar pet yang mustahil.
+    if isWeakSkipped(info) or (lassoTooWeak(info) and not StealCfg.WeakAllowed) then
+        clearCatchLock()
+        return nil
+    end
+    return info
+end
+local function lockCatchTarget(info, score)
+    if not info or not info.model then return end
+    CatchLock.model = info.model
+    CatchLock.id = info.id
+    CatchLock.fails = 0
+    CatchLock.score = tonumber(score) or 0
+    CatchLock.deadline = os.clock() + 18
+end
+local function failCatchLock(info, reason)
+    if not info then clearCatchLock() return end
+    if CatchLock.model ~= info.model and CatchLock.id ~= info.id then return end
+    reason = string.lower(tostring(reason or "capture-failed"))
+    -- Kegagalan navigasi / pet hilang bukan salah target. Lepas lock sekarang
+    -- supaya siklus berikutnya langsung memilih pet yang benar-benar dekat.
+    if string.find(reason, "approach", 1, true)
+        or string.find(reason, "lost", 1, true)
+        or string.find(reason, "far", 1, true)
+        or string.find(reason, "lasso", 1, true)
+        or string.find(reason, "stopped", 1, true) then
+        clearCatchLock()
+        return
+    end
+    CatchLock.fails += 1
+    if CatchLock.fails >= 2 then clearCatchLock() end
+end
+genv.LoopXCode_ClearCatchLock = clearCatchLock
+genv.LoopXCode_FailCatchLock = failCatchLock
+
 -- Target HARUS lolos matchesFilter (tier EXACT + min income + zone EXACT).
 -- Nggak ada auto-turun, nggak ada fallback, nggak ada dropdown yang berubah
 -- sendiri. Kalau tier yang dipilih nggak ada, hub berhenti.
@@ -1145,6 +1296,14 @@ local function pickTarget()
     local char = LocalPlayer.Character
     local rootPart = char and char:FindFirstChild("HumanoidRootPart")
     if not rootPart then return nil end
+
+    local locked = lockedCatchTarget()
+    local lockedScore = -math.huge
+    if locked then
+        local liveLocked = wildRoot(locked.model)
+        if liveLocked then locked.pos = liveLocked.Position end
+        lockedScore = priorityScore(locked, rootPart)
+    end
 
     local best, bestScore = nil, -math.huge
     local fallback, fallbackScore = nil, -math.huge
@@ -1157,7 +1316,8 @@ local function pickTarget()
         if info
             and isUncaptured(model:GetAttribute("CapturedBy"))
             and model:GetAttribute("Despawning") ~= true
-            and matchesFilter(info) then
+            and matchesFilter(info)
+            and not (genv.LoopXCode_IsFarmTurkey and genv.LoopXCode_IsFarmTurkey(info.name)) then
             local score = priorityScore(info, rootPart)
             local red = lassoTooWeak(info)
             if isWeakSkipped(info) then
@@ -1171,7 +1331,25 @@ local function pickTarget()
     end
     -- Yang benar-benar bisa ditangkap selalu diprioritaskan. Weak Lasso Catch
     -- cuma cadangan. Retry dipakai terakhir supaya loop tetap jalan.
-    return best or fallback or retry
+    local chosen = best or fallback or retry
+    if not chosen then
+        clearCatchLock()
+        return nil
+    end
+
+    -- Histeresis: target yang sedang dikejar dipertahankan kalau kandidat baru
+    -- cuma "mungkin lebih dekat" (selisih < 45 stud). Ini menghentikan bolak-balik
+    -- tiap scan. Tapi kalau pet lain jauh lebih dekat, pindah SEKARANG.
+    local chosenScore = chosen == best and bestScore
+        or chosen == fallback and fallbackScore
+        or retryScore
+    if locked and CatchLock.fails < 2 and chosenScore <= lockedScore + 45 then
+        CatchLock.score = lockedScore
+        return locked
+    end
+
+    lockCatchTarget(chosen, chosenScore)
+    return chosen
 end
 
 local function walkTowards(rootPart, targetPos, maxSteps, stopDist)
@@ -1322,13 +1500,15 @@ local function approachTarget(rootPart, targetInfo, maxSteps, stopDist)
     if not (first and rootPart) then return false end
     recoverFromBoss(rootPart)
     local keep = math.max(1.5, (tonumber(CC.Reel and CC.Reel.STOP_DIST) or 4) - 1)
+    local approachTimeout = math.clamp(
+        (first.Position - rootPart.Position).Magnitude / 20 + 6, 7, 18)
 
     rushToPoint(rootPart, function()
         local live = wildRoot(targetInfo.model)
         if not live then return nil end
         targetInfo.pos = live.Position
         return live.Position
-    end, keep, 12, 90)
+    end, keep, approachTimeout, 90)
 
     local done = wildRoot(targetInfo.model)
     if not done then return false end
@@ -1410,10 +1590,10 @@ local isCarrying = function() return false end
 local escapeToSafeZone = function() return false end
 
 local function reelDuration(difficulty)
-    -- Durasi dari system lama yang sudah tested: Fast 1.05s, Safe 4s.
-    -- Fast di atas ReelMinTime (~0.76s), jadi server tetap nerima reel penuh.
-    if isFastReel() then return 1.05 end
-    return 4
+    -- Catch Reel sekarang FAST-only. 0.82s masih di atas batas server yang
+    -- sudah teruji (~0.76s), tapi jauh lebih cepat dari reel lama 1.05s/4s.
+    if isFastReel() then return 0.82 end
+    return 0.82
 end
 
 local function reelCapture(session, targetInfo, difficulty)
@@ -1458,15 +1638,15 @@ local function reelCapture(session, targetInfo, difficulty)
         local progress = 0.2 + 0.8 * math.min(1, (os.clock() - started) / duration)
         if os.clock() - lastFire >= pullEvery then
             lastFire = os.clock()
-            pcall(function() R_STEAL.CapturePull:FireServer(session, math.min(1, progress)) end)
+            pcall(banSafeFire, R_STEAL.CapturePull, session, math.min(1, progress))
         end
         task.wait(reelWait)
     end
 
     if active then
-        pcall(function() R_STEAL.CapturePull:FireServer(session, 1) end)
+        pcall(banSafeFire, R_STEAL.CapturePull, session, 1)
         task.wait(0.05)
-        pcall(function() R_STEAL.FinishCapture:FireServer(session, true, false) end)
+        pcall(banSafeFire, R_STEAL.FinishCapture, session, true, false)
         -- Carrying attribute server datang SESUDAH FinishCapture. Tunggu
         -- sebentar di sini supaya tryCaptureOnce nggak salah hitung "Failed"
         -- padahal pet sudah benar-benar kepegang.
@@ -1620,7 +1800,7 @@ local function bagCount()
     -- Baca atribut player (GRATIS), jangan InvokeServer "list" tiap siklus (bikin ngeframe).
     local n = LocalPlayer:GetAttribute("BagPets")
     if type(n) == "number" then return math.floor(n) end
-    local ok, result = pcall(function() return R_STEAL.PenPetAction:InvokeServer("list") end)
+    local ok, result = pcall(banSafeInvoke, R_STEAL.PenPetAction, "list")
     if ok and type(result) == "table" then return #(result.bag or {}) end
     return -1
 end
@@ -1634,14 +1814,14 @@ local function tryCaptureOnce(rootPart, target)
     if not approachTarget(rootPart, target, 400, 7) then
         bumpStealStat("Failed")
         refreshStealStats()
-        return false
+        return false, "approach"
     end
 
     local live = wildRoot(target.model)
     if not live then
         bumpStealStat("Failed")
         refreshStealStats()
-        return false
+        return false, "lost"
     end
     local liveDist = Vector3.new(
         live.Position.X - rootPart.Position.X, 0,
@@ -1650,7 +1830,7 @@ local function tryCaptureOnce(rootPart, target)
     if liveDist > 17 then
         bumpStealStat("Failed")
         refreshStealStats()
-        return false
+        return false, "far"
     end
 
     -- Deteksi lasso lemah TETAP jalan, tapi tidak menghentikan attempt.
@@ -1674,38 +1854,35 @@ local function tryCaptureOnce(rootPart, target)
     if not ensureLasso() then
         bumpStealStat("Failed")
         refreshStealStats()
-        return false
+        return false, "lasso"
     end
 
-    local okStart, startResult = pcall(function()
-        return R_STEAL.StartCapture:InvokeServer(target.id)
-    end)
+    local okStart, startResult = pcall(banSafeInvoke, R_STEAL.StartCapture, target.id)
     if not (okStart and type(startResult) == "table" and startResult.session
         and startResult.ok ~= false) then
         local reason = ""
         if type(startResult) == "table" then
             reason = tostring(startResult.reason or startResult.msg or startResult.error or "")
         end
-        if reason:lower():find("strong", 1, true)
+        local hardFail = reason:lower():find("strong", 1, true)
             or reason:lower():find("lasso", 1, true)
-            or reason:lower():find("power", 1, true) then
-            skipWeakTarget(target, 25)
-        end
+            or reason:lower():find("power", 1, true)
+        if hardFail then skipWeakTarget(target, 25) end
         bumpStealStat("Failed")
         refreshStealStats()
-        return false
+        return false, hardFail and "weak" or "start"
     end
 
     local active = reelCapture(startResult.session, target, startResult.difficulty)
-    if not active then return false end
+    if not active then return false, "stopped" end
     task.wait(isFastReel() and 0.08 or 0.25)
     if not isCarrying() then
         bumpStealStat("Failed")
         refreshStealStats()
-        return false
+        return false, "no-carry"
     end
     refreshStealStats()
-    return true
+    return true, "ok"
 end
 
 -- Satu siklus penuh. System lama: sekali ON, terus cari/capture di zone.
@@ -1714,9 +1891,10 @@ end
 -- Safe zone HANYA dipakai kalau ada carry sisa dari sesi sebelumnya.
 local consecCatchFails = 0
 local function catchFailed(rootPart, target, reason)
+    reason = string.lower(tostring(reason or "capture-failed"))
     consecCatchFails += 1
     genv.LoopXCode_LastCatchFailAt = os.clock()
-    genv.LoopXCode_LastCatchFailReason = reason or "unknown"
+    genv.LoopXCode_LastCatchFailReason = reason
     if LocalPlayer:GetAttribute("Capturing") == true then cancelCapture(nil) end
     -- Carrying nyangkut pasca guard hit BUKAN hasil tangkapan. Tandai supaya
     -- stealLoop tidak mengira ini pet sukses dan pulang ke safe zone.
@@ -1724,9 +1902,18 @@ local function catchFailed(rootPart, target, reason)
         genv.LoopXCode_LastFailedCarryAt = os.clock()
         -- Carry hasil gagal/GuardianHit bukan pet asli. Buang sekarang supaya
         -- siklus berikutnya tidak ditolah game dan tidak kabur ke safe zone.
-        dropStaleCarry(reason or "capture-failed")
+        dropStaleCarry(reason)
     end
-    if target then skipWeakTarget(target, lassoTooWeak(target) and 25 or 6) end
+    if target then
+        pcall(function() genv.LoopXCode_FailCatchLock(target, reason) end)
+        local hardFail = string.find(reason, "weak", 1, true) ~= nil
+        local softFail = string.find(reason, "approach", 1, true)
+            or string.find(reason, "lost", 1, true)
+            or string.find(reason, "far", 1, true)
+            or string.find(reason, "lasso", 1, true)
+        local skipTime = hardFail and 25 or softFail and 4 or 8
+        skipWeakTarget(target, skipTime)
+    end
     -- 3 gagal berturut = pet di zone ini habis / semua kena guard. Pindah zone
     -- dan hapus skip dulu, jangan diam di "any detect" selamanya.
     if consecCatchFails >= 3 then
@@ -1774,7 +1961,7 @@ local function stealStep()
         end
         setStatus("any detect", tostring(target.name or "?"))
 
-        local ok = tryCaptureOnce(rootPart, target)
+        local ok, failReason = tryCaptureOnce(rootPart, target)
 
         -- Kasih server waktu bersihin Capturing. Kalaupun nyangkut, jangan
         -- nunggu 4 detik: cancel cepat lalu lanjut target berikutnya.
@@ -1790,6 +1977,7 @@ local function stealStep()
         -- isCarrying(). Setelah gagal: skip pet itu, cari yang lain di zone ini.
         if ok then
             consecCatchFails = 0
+            pcall(function() genv.LoopXCode_ClearCatchLock() end)
             if isCarrying() then
                 -- Carry asli hasil catch sukses -> persist sekarang, lalu
                 -- loop berikutnya mulai lagi dari zone yang sama.
@@ -1800,7 +1988,7 @@ local function stealStep()
         else
             -- Gagal / guard menyela: skip pet ini sebentar, lanjut cari yang
             -- hijau/orange. Setelah 3 gagal, pindah zone tanpa balik safe.
-            pcall(catchFailed, rootPart, target, "capture-failed")
+            pcall(catchFailed, rootPart, target, failReason or "capture-failed")
         end
         if not StealCfg.Enabled then return false end
     end
@@ -1951,7 +2139,7 @@ local function equipBestSpeed()
     -- sampai ada isinya, kalau nggak bakal salah pilih / nggak nge-equip.
     local list
     for _ = 1, 4 do
-        local ok, res = pcall(function() return R_STEAL.PenPetAction:InvokeServer("list") end)
+        local ok, res = pcall(banSafeInvoke, R_STEAL.PenPetAction, "list")
         local penN, bagN = 0, 0
         if ok and type(res) == "table" then
             if type(res.pen) == "table" then penN = #res.pen end
@@ -2001,14 +2189,14 @@ local function equipBestSpeed()
 
     -- langkah 1: siapkan hewan (skip kalau sudah ke-prep)
     if (LocalPlayer:GetAttribute("MountPet") or "") ~= best.id then
-        pcall(function() R_STEAL.PenPetAction:InvokeServer("equipmount", best.id) end)
+        pcall(banSafeInvoke, R_STEAL.PenPetAction, "equipmount", best.id)
         task.wait(0.12)
     end
     -- langkah 2: benaran pakai / kendarai hewan (ini yang bikin gerak)
     if R_MOUNT then
-        pcall(function() R_MOUNT:InvokeServer(best.id, true) end)
+        pcall(banSafeInvoke, R_MOUNT, best.id, true)
     else
-        pcall(function() R_STEAL.PenPetAction:InvokeServer("equipbestmount") end)
+        pcall(banSafeInvoke, R_STEAL.PenPetAction, "equipbestmount")
     end
     pcall(function()
         local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
@@ -2037,7 +2225,7 @@ genv.LoopXCode_EnsureMountedSpeed = ensureMountedSpeed
 -- Turun dari pet: samakan tombol Ride game saat hewan sedang dipakai.
 local function dismountPet()
     if R_MOUNT then
-        pcall(function() R_MOUNT:InvokeServer("", true) end)
+        pcall(banSafeInvoke, R_MOUNT, "", true)
     end
 end
 genv.LoopXCode_DismountPet = dismountPet
@@ -2048,7 +2236,7 @@ genv.LoopXCode_DismountPet = dismountPet
 local function equipBestPen()
     local remote = R_STEAL and R_STEAL.PenPetAction
     if not remote then return false end
-    local ok, res = pcall(function() return remote:InvokeServer("equipbest") end)
+    local ok, res = pcall(banSafeInvoke, remote, "equipbest")
     return ok and type(res) == "table" and res.ok == true
 end
 genv.LoopXCode_EquipBestPen = equipBestPen
@@ -2279,13 +2467,64 @@ local function setFarmText(text)
     end)
 end
 
+-- Farm target lock disimpan di genv supaya tidak menambah local di chunk utama
+-- (Luau membatasi 200 local register per function).
+genv.LoopXCode_FarmLock = { model = nil, name = nil, zone = nil, fails = 0, deadline = 0 }
+genv.LoopXCode_FarmSkip = genv.LoopXCode_FarmSkip or {}
+genv.LoopXCode_ClearFarmLock = function()
+    local lock = genv.LoopXCode_FarmLock
+    lock.model, lock.name, lock.zone, lock.fails, lock.deadline = nil, nil, nil, 0, 0
+end
+genv.LoopXCode_FailFarmLock = function(entry)
+    local lock = genv.LoopXCode_FarmLock
+    if entry and entry.model and lock.model ~= entry.model then return end
+    lock.fails += 1
+    if lock.fails >= 2 then
+        local model = lock.model
+        if model then
+            local id = tostring(model:GetAttribute("WildId") or model.Name)
+            genv.LoopXCode_FarmSkip[id] = os.clock() + 20
+        end
+        genv.LoopXCode_ClearFarmLock()
+    end
+end
+genv.LoopXCode_FarmLockedEntry = function()
+    local lock = genv.LoopXCode_FarmLock
+    local model = lock.model
+    if not model or model.Parent ~= WildFolder then genv.LoopXCode_ClearFarmLock() return nil end
+    if os.clock() > (tonumber(lock.deadline) or 0) then genv.LoopXCode_ClearFarmLock() return nil end
+    local skip = genv.LoopXCode_FarmSkip[tostring(model:GetAttribute("WildId") or model.Name)]
+    if skip and os.clock() < skip then genv.LoopXCode_ClearFarmLock() return nil end
+    if isUncaptured(model:GetAttribute("CapturedBy")) ~= true
+        or model:GetAttribute("Despawning") == true then genv.LoopXCode_ClearFarmLock() return nil end
+    local info = wildInfo(model)
+    if not info or not isFarmTurkey(info.name) or not farmMapAllowed(info.zone)
+        or lassoTooWeak(info) then genv.LoopXCode_ClearFarmLock() return nil end
+    local coins = 0
+    pcall(function()
+        local cfg = THC and THC.TURKEYS and THC.TURKEYS[info.name]
+        coins = tonumber(cfg and (cfg.Coins or cfg.coins)) or 0
+    end)
+    return { name = info.name, zone = info.zone, ratio = lassoRatio(info),
+        coins = coins, dist = 0, score = 1000 + coins * 2, model = model }
+end
+genv.LoopXCode_LockFarmTarget = function(entry)
+    if not entry or not entry.model then return end
+    local lock = genv.LoopXCode_FarmLock
+    lock.model, lock.name, lock.zone, lock.fails = entry.model, entry.name, entry.zone, 0
+    lock.deadline = os.clock() + 60
+end
+
 local function scanFarmTarget(rootPart)
+    local locked = genv.LoopXCode_FarmLockedEntry()
+    if locked then return locked end
     local entries, byMap = {}, {}
     for _, model in ipairs(WildFolder:GetChildren()) do
         if isUncaptured(model:GetAttribute("CapturedBy"))
             and model:GetAttribute("Despawning") ~= true then
             local info = wildInfo(model)
-            if info and isFarmTurkey(info.name) and farmMapAllowed(info.zone) then
+            if info and isFarmTurkey(info.name) and farmMapAllowed(info.zone)
+                and not ((genv.LoopXCode_FarmSkip[tostring(model:GetAttribute("WildId") or model.Name)] or 0) > os.clock()) then
                 -- Merah = lasso benar-benar kurang. Skip dan cari yang
                 -- hijau/orange memakai ambang warna yang sama dengan game.
                 if not lassoTooWeak(info) then
@@ -2300,7 +2539,7 @@ local function scanFarmTarget(rootPart)
                         + math.max(0, 1000 - dist)
                     entries[#entries + 1] = {
                         name = info.name, zone = info.zone, ratio = ratio,
-                        coins = coins, dist = dist, score = score
+                        coins = coins, dist = dist, score = score, model = model
                     }
                     byMap[info.zone] = (byMap[info.zone] or 0) + 1
                 end
@@ -2324,10 +2563,17 @@ local function scanFarmTarget(rootPart)
 end
 genv.LoopXCode_FarmScan = scanFarmTarget
 
-local function farmRoam(rootPart)
+local function farmRoam(rootPart, zoneHint)
     if not rootPart then return end
     local maps = FarmCfg.Maps
     if #maps == 0 or maps[1] == "Any" then
+        -- Kalau target turkey baru saja gagal, tetap di map-nya dulu. Jangan
+        -- keliling global yang bikin farm bolak-balik lintas biome.
+        if zoneHint and zoneHint ~= "Any" then
+            pcall(stageToZone, rootPart, zoneHint)
+            task.wait(0.2)
+            return
+        end
         pcall(roamToNextZone, rootPart)
         return
     end
@@ -2379,7 +2625,7 @@ local function farmDeposit()
     FarmCfg.LastDepositAt = os.clock()
     local before = farmPoints()
     local coinsBefore = farmCoins()
-    local fired = pcall(function() R_TURKEY_DEPOSIT:FireServer() end)
+    local fired = pcall(banSafeFire, R_TURKEY_DEPOSIT)
     if not fired then return false, "deposit remote error" end
     local after = before
     for _ = 1, 30 do
@@ -2413,6 +2659,13 @@ local function farmLoop()
     task.spawn(function()
         while FarmCfg.Enabled do
             updateFarmCoinText()
+            -- Auto Catch diprioritaskan. Toggle Auto Farm tetap ON di UI, tapi
+            -- loop-nya standby supaya dua driver nggak berebut MoveTo.
+            if StealCfg.Enabled then
+                FarmCfg.LastTarget = "standby: Auto Catch"
+                task.wait(0.5)
+                continue
+            end
             -- Event belum ada / round belum aktif: diam, jangan scan, jangan
             -- jalan-jalan, jangan kirim notifikasi. Cuma tunggu sampai aktif.
             if farmRoundActive() then
@@ -2423,17 +2676,28 @@ local function farmLoop()
                 if rootPart and not ManualSteal.Active and not StealCfg.Busy then
                     local target = scanFarmTarget(rootPart)
                     if target then
+                        genv.LoopXCode_LockFarmTarget(target)
                         FarmCfg.LastTarget = target.name .. " (" .. tostring(target.zone) .. ")"
                         pcall(startManualSteal, target.name, target.zone)
-                        local deadline = os.clock() + 180
+                        local deadline = os.clock() + 45
                         while FarmCfg.Enabled and ManualSteal.Active and os.clock() < deadline do
                             task.wait(0.2)
                         end
                         if FarmCfg.Enabled then
                             if holdingFarmTurkeys() > 0 then
                                 pcall(farmDeposit)
+                                pcall(genv.LoopXCode_ClearFarmLock)
+                                FarmCfg.FailStreak = 0
                             else
-                                pcall(farmRoam, rootPart)
+                                pcall(genv.LoopXCode_FailFarmLock, target)
+                                FarmCfg.FailStreak = (FarmCfg.FailStreak or 0) + 1
+                                if FarmCfg.FailStreak >= 3 then
+                                    for id in pairs(genv.LoopXCode_FarmSkip) do
+                                        genv.LoopXCode_FarmSkip[id] = nil
+                                    end
+                                    FarmCfg.FailStreak = 0
+                                end
+                                pcall(farmRoam, rootPart, target.zone)
                             end
                         end
                     else
@@ -2455,10 +2719,13 @@ local farmAntiHitPrev = nil
 local function applyAutoFarm(v)
     v = (v == true)
     if v then
-        if StealCfg.Enabled then
-            pcall(function() genv.LoopXCode_ApplyAutoSteal(false) end)
-            setUIValue(UIHandles["Auto Catch"], false)
-        end
+        -- Matikan NoClip sementara. Toggle UI No Clip tetap ON di config;
+        -- setelah farm selesai otomatis nyala lagi.
+        farmAntiHitPrev = genv.LoopXCode_HardenCfg.AntiHit == true
+            and genv.LoopXCode_NoClipState.active == true
+        if farmAntiHitPrev then pcall(function() genv.LoopXCode_StopNoClip() end) end
+        -- Auto Catch dan Auto Farm boleh sama-sama ON. farmLoop yang standby
+        -- saat catch aktif; jangan matikan toggle Catch dari sini.
         if genv.LoopXCode_HardenCfg.AutoTreadmill then
             pcall(function() genv.LoopXCode_HardenToggle("AutoTreadmill", false) end)
             setUIValue(UIHandles["Auto Treadmill"], false)
@@ -2466,12 +2733,6 @@ local function applyAutoFarm(v)
         if genv.LoopXCode_HardenCfg.AdminEventTreadmill then
             pcall(function() genv.LoopXCode_HardenToggle("AdminEventTreadmill", false) end)
             setUIValue(UIHandles["Auto Treadmill Admin Event"], false)
-        end
-        if farmAntiHitPrev == nil then
-            farmAntiHitPrev = genv.LoopXCode_HardenCfg.AntiHit
-        end
-        if not genv.LoopXCode_HardenCfg.AntiHit then
-            pcall(function() genv.LoopXCode_HardenToggle("AntiHit", true) end)
         end
         FarmCfg.Enabled = true
         FarmCfg.CoinStart = farmCoins()
@@ -2488,8 +2749,8 @@ local function applyAutoFarm(v)
         farmLoop()
     else
         FarmCfg.Enabled = false
-        if farmAntiHitPrev ~= nil then
-            pcall(function() genv.LoopXCode_HardenToggle("AntiHit", farmAntiHitPrev == true) end)
+        if farmAntiHitPrev and not StealCfg.Enabled and not ManualSteal.Active then
+            pcall(function() genv.LoopXCode_StartNoClip() end)
             farmAntiHitPrev = nil
         end
         if not StealCfg.Enabled and not ManualSteal.Active then setStatus("idle", "any detect") end
@@ -2505,11 +2766,7 @@ local autoStealAntiHitPrev = nil
 local function applyAutoSteal(v)
     local FarmCfg = genv.LoopXCode_FarmCfg
     StealCfg.Enabled = (v == true)
-    if StealCfg.Enabled and FarmCfg.Enabled then
-        -- Auto Catch dan Auto Farm Event nggak jalan bareng: satu owner loop saja.
-        pcall(function() genv.LoopXCode_ApplyAutoFarm(false) end)
-        setUIValue(UIHandles["Auto farm"], false)
-    end
+    -- Auto Farm tetap ON di UI; farmLoop akan standby selama catch aktif.
     if StealCfg.Enabled and genv.LoopXCode_HardenCfg.AutoTreadmill then
         pcall(function() genv.LoopXCode_HardenToggle("AutoTreadmill", false) end)
     end
@@ -2519,11 +2776,17 @@ local function applyAutoSteal(v)
         setUIValue(UIHandles["Auto Treadmill Admin Event"], false)
     end
     if StealCfg.Enabled then
-        if autoStealAntiHitPrev == nil then
-            autoStealAntiHitPrev = genv.LoopXCode_HardenCfg.AntiHit
-        end
-        if not genv.LoopXCode_HardenCfg.AntiHit then
-            pcall(function() genv.LoopXCode_HardenToggle("AntiHit", true) end)
+        -- NoClip bikin char mengambang & MoveTo gagal. Suspended selama hunting,
+        -- lalu dinyalakan lagi begitu Auto Catch / Farm / Manual selesai.
+        autoStealAntiHitPrev = genv.LoopXCode_HardenCfg.AntiHit == true
+            and genv.LoopXCode_NoClipState.active == true
+        if autoStealAntiHitPrev then pcall(function() genv.LoopXCode_StopNoClip() end) end
+        local huntChar = LocalPlayer.Character
+        local huntRoot = huntChar and huntChar:FindFirstChild("HumanoidRootPart")
+        local huntHum = huntChar and huntChar:FindFirstChildOfClass("Humanoid")
+        if huntRoot and huntHum and (huntRoot.Position.Y > 120
+            or huntHum:GetState() == Enum.HumanoidStateType.Freefall) then
+            pcall(function() genv.LoopXCode_Respawn() end)
         end
         -- pastikan hewan ke-ride sebelum jalan (tanpa turun dari pet).
         -- Selalu dipanggil saat Auto Catch ON, terlepas dari toggle Auto Equip.
@@ -2535,12 +2798,12 @@ local function applyAutoSteal(v)
         setStatus("on system", "any detect")
         stealLoop()
     else
-        if autoStealAntiHitPrev ~= nil then
-            pcall(function() genv.LoopXCode_HardenToggle("AntiHit", autoStealAntiHitPrev) end)
-            autoStealAntiHitPrev = nil
-        end
         StealCfg.Busy = false
         updateStealInfo(nil)
+        if autoStealAntiHitPrev and not FarmCfg.Enabled and not ManualSteal.Active then
+            pcall(function() genv.LoopXCode_StartNoClip() end)
+            autoStealAntiHitPrev = nil
+        end
         if not ManualSteal.Active then setStatus("idle", "any detect") end
     end
 end
@@ -2568,9 +2831,9 @@ function SkipTutorial.Run()
         id = entry and entry.id or "?"
     end
 
-    local ok, result = pcall(function() return TutorialRemote:InvokeServer("skip") end)
+    local ok, result = pcall(banSafeInvoke, TutorialRemote, "skip")
     if (not ok or not serverAccepted(result)) and step > 0 then
-        pcall(function() return TutorialRemote:InvokeServer("uidone", id) end)
+        pcall(banSafeInvoke, TutorialRemote, "uidone", id)
     end
 end
 genv.LoopXCode_SkipTutorial = SkipTutorial
@@ -2580,27 +2843,32 @@ genv.LoopXCode_SkipTutorial = SkipTutorial
 -- =====================================================================
 local Camera = Workspace.CurrentCamera
 local ESPConfig = {
-    -- Master ESP aktif oleh default. Tanpa toggle ini loop ESP tidak pernah
-    -- mengaktifkan billboard walaupun toggle kategori sudah ON.
-    Enabled = true,
+    Enabled = defaultToggle(true),
+    ToggleKey = Enum.KeyCode.Q,
     MaxDistance = 1500,
     FixedSize = true,
     ShowInfo = defaultToggle(true),
-    -- RenderStepped tetap dipakai buat timing, tapi kerja berat ESP cuma
-    -- jalan tiap interval ini. Naikkan kalau masih lag, turunkan kalau mau halus.
-    UpdateInterval = 0.12,
-    ScanInterval = 0.75,
-    ESPPlayers = true,
-    ESPGuards = false,
-    ESPPets = true,
+
+    -- Player ESP
+    ESPPlayers = defaultToggle(true),
+    TeamCheck = false,
     PlayerSize = 14,
+    PlayerColor = Color3.fromRGB(255, 92, 40),
+
+    -- Pet / Guard ESP
+    ESPGuards = defaultToggle(true),
+    ESPPets = defaultToggle(true),
     GuardSize = 13,
     PetSize = 13,
-    PlayerColor = Color3.fromRGB(255, 92, 40),
     GuardColor = Color3.fromRGB(251, 191, 36),
     PetColor = Color3.fromRGB(56, 189, 248),
-    TargetFolders = { "WildPets", "PetsGame", "Guardians", "Pets", "Guards", "NPCs", "Enemies", "Mobs" },
-    -- Style ESP per kategori. "Any" dipakai shortcut buat set semua sekaligus.
+
+    -- Scan entity tiap 1.5 detik; renderBillboard tiap frame.
+    ScanInterval = 1.5,
+    TargetFolders = { "Guards", "Pets", "NPCs", "Enemies", "Mobs", "WildPets", "PetsGame", "Guardians" },
+
+    -- Style lama tetap disimpan supaya input ESP Style tidak putus. Warna &
+    -- ukuran dipetakan ke field di atas; shadow/font jadi kompatibilitas UI.
     Styles = {
         Any = { Size = 13, Shadow = 50, ShadowOffset = 1, Font = "Bold", Color = "#8AD7FF" },
         Player = { Size = 14, Shadow = 50, ShadowOffset = 1, Font = "Bold", Color = "#FF5C28" },
@@ -2632,6 +2900,14 @@ local function setEspStyle(category, key, value)
     for _, cat in ipairs(targets) do
         local style = ESPConfig.Styles[cat]
         if style then style[key] = value end
+        if key == "Size" then
+            ESPConfig[cat .. "Size"] = math.clamp(math.floor(tonumber(value) or 13), 10, 28)
+        elseif key == "Color" then
+            local fallback = cat == "Player" and ESPConfig.PlayerColor
+                or cat == "Guard" and ESPConfig.GuardColor
+                or ESPConfig.PetColor
+            ESPConfig[cat .. "Color"] = colorFromInput(value, fallback)
+        end
     end
 end
 genv.LoopXCode_SetEspStyle = setEspStyle
@@ -2679,18 +2955,41 @@ local function addEspStyleInputs(section, category, label)
     })
 end
 
+-- Renderer ESP mengikuti ContohESP.luau: BillboardGui + TextLabel di
+-- ScreenGui, scan tiap 1.5 detik, update tiap frame. Dipisah di scope sendiri
+-- supaya lokal-nya tidak memakan register chunk utama.
+local function buildESP()
+local GuiParent = GetSafeGuiParent()
+for _, root in ipairs(cleanupRoots) do
+    pcall(function()
+        local old = root:FindFirstChild("ChilliStyleESP_UI")
+        if old then old:Destroy() end
+    end)
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "ChilliStyleESP_UI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = GuiParent
+
 local BillboardHolder = Instance.new("Folder")
-BillboardHolder.Name = "LoopXCode_ESP_Holder"
-BillboardHolder.Parent = ParentGui
+BillboardHolder.Name = "ESP_Holder"
+BillboardHolder.Parent = ScreenGui
 
 local ESPCache = {}
 local TrackedEntities = {}
+local espAlive = true
+local RenderConn, FocusConn, FocusReleaseConn, InputConn
+local IsTyping = false
+
+genv.LoopXCode_ESPGui = ScreenGui
 
 local function GetAnchorPart(model)
     if not model or not model.Parent then return nil end
     if model:IsA("BasePart") then return model end
-    return model:FindFirstChild("RootPart")
-        or model:FindFirstChild("Head")
+    return model:FindFirstChild("Head")
+        or model:FindFirstChild("RootPart")
         or model:FindFirstChild("HumanoidRootPart")
         or model.PrimaryPart
         or model:FindFirstChildWhichIsA("BasePart", true)
@@ -2698,27 +2997,34 @@ end
 
 local function ClassifyEntity(model)
     if not model or not model:IsA("Model") then return nil end
-    if Players:GetPlayerFromCharacter(model) then return "Player" end
-    if model:GetAttribute("Guardian") == true or model:GetAttribute("Boss") then return "Guard" end
-    -- Pet asli game selalu punya atribut PetName (wild maupun di pen).
-    if model:GetAttribute("PetName") then return "Pet" end
+    if Players:GetPlayerFromCharacter(model) then return nil end
 
     local lowerName = string.lower(model.Name)
     local parentName = model.Parent and string.lower(model.Parent.Name) or ""
+    local hum = model:FindFirstChildOfClass("Humanoid")
 
-    if parentName == "wildpets" or parentName == "penpets" or parentName == "pets" then
+    if model:GetAttribute("Guardian") == true or model:GetAttribute("Boss") then
+        return "Guard"
+    end
+    if model:GetAttribute("PetName") then
         return "Pet"
     end
     if string.find(lowerName, "guard") or string.find(parentName, "guard")
-        or string.find(lowerName, "enemy") or string.find(parentName, "enemy")
-        or string.find(parentName, "guardians") then
+        or string.find(lowerName, "enemy") or string.find(parentName, "enemy") then
+        return "Guard"
+    end
+    if string.find(lowerName, "pet") or string.find(parentName, "pet")
+        or parentName == "wildpets" or parentName == "penpets" then
+        return "Pet"
+    end
+    if hum and hum.Health > 0 then
         return "Guard"
     end
     return nil
 end
 
 task.spawn(function()
-    while BillboardHolder.Parent do
+    while espAlive and ScreenGui.Parent do
         local found = {}
         for _, folderName in ipairs(ESPConfig.TargetFolders) do
             local folder = Workspace:FindFirstChild(folderName)
@@ -2734,7 +3040,10 @@ task.spawn(function()
             if cat then found[child] = cat end
         end
         TrackedEntities = found
-        task.wait(math.max(0.25, tonumber(ESPConfig.ScanInterval) or 0.75))
+        local tracked = 0
+        for _ in pairs(found) do tracked += 1 end
+        genv.LoopXCode_ESPTracked = tracked
+        task.wait(math.max(0.5, tonumber(ESPConfig.ScanInterval) or 1.5))
     end
 end)
 
@@ -2752,42 +3061,29 @@ local function EnsureBillboard(model, category)
         bb.Adornee = anchor
         bb.Parent = BillboardHolder
 
-        -- Shadow duplikat hitam di belakang teks (bukan outline/garis).
-        local sh = Instance.new("TextLabel")
-        sh.Name = "Shadow"
-        sh.Size = UDim2.fromScale(1, 1)
-        sh.BackgroundTransparency = 1
-        sh.Font = Enum.Font.GothamBold
-        sh.TextColor3 = Color3.fromRGB(0, 0, 0)
-        sh.TextStrokeTransparency = 1
-        sh.TextXAlignment = Enum.TextXAlignment.Center
-        sh.TextYAlignment = Enum.TextYAlignment.Center
-        sh.TextWrapped = false
-        sh.Active = false
-        sh.Parent = bb
-
         local lbl = Instance.new("TextLabel")
         lbl.Name = "Label"
         lbl.Size = UDim2.fromScale(1, 1)
         lbl.BackgroundTransparency = 1
         lbl.Font = Enum.Font.GothamBold
-        lbl.TextStrokeTransparency = 1
+        lbl.TextStrokeTransparency = 0.2
+        lbl.TextStrokeColor3 = Color3.fromRGB(12, 12, 16)
         lbl.TextWrapped = false
         lbl.Parent = bb
 
-        entry = { Gui = bb, Label = lbl, Shadow = sh, Category = category }
+        entry = { Gui = bb, Label = lbl, Category = category }
         ESPCache[model] = entry
     elseif entry.Gui.Adornee ~= anchor then
         entry.Gui.Adornee = anchor
     end
-
     return entry
 end
 
 local function PruneESPCache()
     for model, entry in pairs(ESPCache) do
         local validModel = model and model.Parent ~= nil
-        local validAdornee = entry.Gui and entry.Gui.Adornee and entry.Gui.Adornee.Parent ~= nil
+        local adornee = entry.Gui and entry.Gui.Adornee or nil
+        local validAdornee = adornee and adornee.Parent ~= nil
         if not validModel or not validAdornee then
             if entry.Gui then pcall(function() entry.Gui:Destroy() end) end
             ESPCache[model] = nil
@@ -2796,142 +3092,59 @@ local function PruneESPCache()
 end
 
 local function ApplyTextSize(entry, sizePx)
+    local sig = tostring(ESPConfig.FixedSize) .. "|" .. tostring(sizePx)
+    if entry.SizeSig == sig then return end
+    entry.SizeSig = sig
     if ESPConfig.FixedSize then
-        entry.Gui.Size = UDim2.new(0, 340, 0, sizePx + 12)
+        entry.Gui.Size = UDim2.new(0, 280, 0, sizePx + 12)
         entry.Label.TextScaled = false
         entry.Label.TextSize = sizePx
     else
-        entry.Gui.Size = UDim2.new(0, 240, 0, 44)
+        entry.Gui.Size = UDim2.new(0, 200, 0, 44)
         entry.Label.TextScaled = true
     end
 end
-
-local function applyEspStyle(entry, category)
-    local style = ESPConfig.Styles[category] or ESPConfig.Styles.Any
-    local size = math.max(1, math.floor(tonumber(style.Size) or 13))
-    local sh = shadowAmount(style.Shadow, 50)
-    local so = math.clamp(math.floor(tonumber(style.ShadowOffset) or 1), 0, 12)
-    local face = fontFaceByName(style.Font)
-    local fallbackColor = (category == "Player" and ESPConfig.PlayerColor)
-        or (category == "Guard" and ESPConfig.GuardColor)
-        or ESPConfig.PetColor
-    local color = colorFromInput(style.Color, fallbackColor)
-    ApplyTextSize(entry, size)
-    pcall(function()
-        applyFont(entry.Label, face)
-        entry.Label.TextColor3 = color
-        if entry.Shadow then
-            applyFont(entry.Shadow, face)
-            entry.Shadow.TextSize = size
-            entry.Shadow.TextScaled = entry.Label.TextScaled
-            entry.Shadow.TextTransparency = 1 - sh
-            entry.Shadow.Visible = sh > 0
-            entry.Shadow.Position = UDim2.new(0, so, 0, so)
-        end
-    end)
-end
-
--- Style cuma dipakai ulang kalau nilai menu-nya berubah. Ini yang bikin
--- RenderStepped nggak nulis FontFace/Color3/UDim2 tiap frame buat tiap ESP.
-local StyleSigCache = {}
-local function espStyleSignature(category)
-    local style = ESPConfig.Styles[category] or ESPConfig.Styles.Any
-    local sig = table.concat({
-        tostring(style.Size), tostring(style.Shadow), tostring(style.ShadowOffset),
-        tostring(style.Font), tostring(style.Color), tostring(ESPConfig.FixedSize),
-        tostring(ESPConfig.ShowInfo)
-    }, "|")
-    StyleSigCache[category] = sig
-    return sig
-end
-
-local function setEntryText(entry, text)
-    if entry.LastText == text then return end
-    entry.LastText = text
-    entry.Label.Text = text
-    if entry.Shadow then entry.Shadow.Text = text end
-end
-
-local function refreshEntryStyle(entry, category)
-    local sig = espStyleSignature(category)
-    if entry.StyleSig ~= sig then
-        applyEspStyle(entry, category)
-        entry.StyleSig = sig
-        entry.LastText = nil
-    end
-end
-
-local function joinInfo(parts)
-    local out = {}
-    for _, value in ipairs(parts) do
-        if value ~= nil and tostring(value) ~= "" then
-            table.insert(out, tostring(value))
-        end
-    end
-    return table.concat(out, " • ")
-end
-
-local function EntityText(model, category, dist)
-    if category == "Player" then
-        local plr = Players:GetPlayerFromCharacter(model)
-        local name = plr and ((plr.DisplayName ~= plr.Name)
-            and (plr.DisplayName .. " (@" .. plr.Name .. ")")
-            or plr.Name) or model.Name
-        local hum = model:FindFirstChildOfClass("Humanoid")
-        local hp = hum and math.floor(hum.Health) or 0
-        if ESPConfig.ShowInfo then
-            return string.format("[%dm] %s • %d HP", math.floor(dist), name, hp)
-        end
-        return name
-    end
-
-    local isGuard = category == "Guard"
-    local display = model:GetAttribute("Display") or model.Name
-    local detail = isGuard
-        and joinInfo({ model:GetAttribute("GState"), model:GetAttribute("Biome") })
-        or joinInfo({ model:GetAttribute("Rarity"), model:GetAttribute("Biome") })
-
-    if ESPConfig.ShowInfo then
-        return string.format("[%dm] %s • %s%s",
-            math.floor(dist), isGuard and "GUARD" or "PET", display,
-            detail ~= "" and (" • " .. detail) or "")
-    end
-    return display
-end
-
-local RenderConn
-local lastEspUpdate = 0
+local lastEspRender = 0
 RenderConn = RunService.RenderStepped:Connect(function()
-    if not BillboardHolder.Parent then
-        RenderConn:Disconnect()
-        return
-    end
-
-    -- BillboardGui.Adornee sudah bikin label ngikutin pet tiap frame.
-    -- Kerja berat (scan + hitung teks + tulis style) cuma tiap UpdateInterval.
+    if not espAlive or not ScreenGui.Parent then return end
     local now = os.clock()
-    if now - lastEspUpdate < math.max(0.05, tonumber(ESPConfig.UpdateInterval) or 0.12) then return end
-    lastEspUpdate = now
-
+    if now - lastEspRender < 0.05 then return end
+    lastEspRender = now
     PruneESPCache()
 
-    local myRoot = LocalPlayer.Character and GetAnchorPart(LocalPlayer.Character)
+    local myChar = LocalPlayer.Character
+    local myRoot = myChar and GetAnchorPart(myChar)
     local origin = myRoot and myRoot.Position or Camera.CFrame.Position
+    local shown = 0
 
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer and plr.Character and ESPConfig.ESPPlayers then
+        if plr ~= LocalPlayer and plr.Character then
             local char = plr.Character
             local hum = char:FindFirstChildOfClass("Humanoid")
             local anchor = GetAnchorPart(char)
             if anchor and hum and hum.Health > 0 then
-                local entry = EnsureBillboard(char, "Player")
+                local dist = (anchor.Position - origin).Magnitude
+                local teamPass = (not ESPConfig.TeamCheck) or (plr.Team ~= LocalPlayer.Team)
+                local show = ESPConfig.Enabled and ESPConfig.ESPPlayers
+                    and teamPass and dist <= ESPConfig.MaxDistance
+                local entry = show and EnsureBillboard(char, "Player") or ESPCache[char]
                 if entry then
-                    local dist = (anchor.Position - origin).Magnitude
-                    local show = ESPConfig.Enabled and dist <= ESPConfig.MaxDistance
                     entry.Gui.Enabled = show
                     if show then
-                        refreshEntryStyle(entry, "Player")
-                        setEntryText(entry, EntityText(char, "Player", dist))
+                        shown += 1
+                        ApplyTextSize(entry, ESPConfig.PlayerSize)
+                        entry.Label.TextColor3 = ESPConfig.PlayerColor
+                        local nameStr = (plr.DisplayName ~= plr.Name)
+                            and (plr.DisplayName .. " (@" .. plr.Name .. ")")
+                            or plr.Name
+                        local text = ESPConfig.ShowInfo
+                            and string.format("[%dm] %s • %d HP",
+                                math.floor(dist), nameStr, math.floor(hum.Health))
+                            or nameStr
+                        if entry.LastText ~= text then
+                            entry.LastText = text
+                            entry.Label.Text = text
+                        end
                     end
                 end
             end
@@ -2939,41 +3152,75 @@ RenderConn = RunService.RenderStepped:Connect(function()
     end
 
     for model, category in pairs(TrackedEntities) do
-        -- Player sudah digambar di loop Players; jangan dimatikan loop ini.
-        if category ~= "Player" and model and model.Parent then
+        if model and model.Parent then
             local anchor = GetAnchorPart(model)
             local hum = model:FindFirstChildOfClass("Humanoid")
             if anchor and (not hum or hum.Health > 0) then
-                local entry = EnsureBillboard(model, category)
+                local dist = (anchor.Position - origin).Magnitude
+                local catEnabled = (category == "Guard" and ESPConfig.ESPGuards)
+                    or (category == "Pet" and ESPConfig.ESPPets)
+                local show = ESPConfig.Enabled and catEnabled and dist <= ESPConfig.MaxDistance
+                local entry = show and EnsureBillboard(model, category) or ESPCache[model]
                 if entry then
-                    local dist = (anchor.Position - origin).Magnitude
-                    local catEnabled = (category == "Guard" and ESPConfig.ESPGuards)
-                        or (category == "Pet" and ESPConfig.ESPPets)
-                    local show = ESPConfig.Enabled and catEnabled and dist <= ESPConfig.MaxDistance
                     entry.Gui.Enabled = show
                     if show then
-                        refreshEntryStyle(entry, category)
-                        setEntryText(entry, EntityText(model, category, dist))
+                        shown += 1
+                        local isGuard = category == "Guard"
+                        local sizePx = isGuard and ESPConfig.GuardSize or ESPConfig.PetSize
+                        local colorVal = isGuard and ESPConfig.GuardColor or ESPConfig.PetColor
+                        ApplyTextSize(entry, sizePx)
+                        entry.Label.TextColor3 = colorVal
+                        local tag = isGuard and "GUARD" or "PET"
+                        local hpPart = (hum and ESPConfig.ShowInfo)
+                            and string.format(" • %d HP", math.floor(hum.Health)) or ""
+                        local distPart = ESPConfig.ShowInfo
+                            and string.format("[%dm] ", math.floor(dist)) or ""
+                        local text = string.format("%s[%s] %s%s", distPart, tag, model.Name, hpPart)
+                        if entry.LastText ~= text then
+                            entry.LastText = text
+                            entry.Label.Text = text
+                        end
                     end
                 end
             end
         end
     end
+
+    local cached = 0
+    for _ in pairs(ESPCache) do cached += 1 end
+    genv.LoopXCode_ESPStats = {
+        drawn = shown, cached = cached,
+        tracked = genv.LoopXCode_ESPTracked or 0, ui = true
+    }
 end)
 
-local function stopESP()
-    if RenderConn then
-        pcall(function() RenderConn:Disconnect() end)
-        RenderConn = nil
-    end
-    for model, entry in pairs(ESPCache) do
+FocusConn = UserInputService.TextBoxFocused:Connect(function() IsTyping = true end)
+FocusReleaseConn = UserInputService.TextBoxFocusReleased:Connect(function() IsTyping = false end)
+pcall(function()
+    InputConn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if not gameProcessed and not IsTyping and input.KeyCode == ESPConfig.ToggleKey then
+            ESPConfig.Enabled = not ESPConfig.Enabled
+        end
+    end)
+end)
+
+OnCleanup(function()
+    espAlive = false
+    if RenderConn then pcall(function() RenderConn:Disconnect() end) end
+    if FocusConn then pcall(function() FocusConn:Disconnect() end) end
+    if FocusReleaseConn then pcall(function() FocusReleaseConn:Disconnect() end) end
+    if InputConn then pcall(function() InputConn:Disconnect() end) end
+    for _, entry in pairs(ESPCache) do
         if entry.Gui then pcall(function() entry.Gui:Destroy() end) end
-        ESPCache[model] = nil
     end
-    TrackedEntities = {}
-    pcall(function() BillboardHolder:Destroy() end)
+    pcall(function() ScreenGui:Destroy() end)
+    ESPCache, TrackedEntities = {}, {}
+    genv.LoopXCode_ESPStats = { drawn = 0, cached = 0, tracked = 0, ui = false }
+end)
+
+genv.LoopXCode_ESPStats = { drawn = 0, cached = 0, tracked = 0, ui = true }
 end
-OnCleanup(stopESP)
+buildESP()
 
 -- =====================================================================
 -- 4. EXTENDED HACKS — remote tervalidasi, efek hanya untuk LocalPlayer
@@ -2983,34 +3230,27 @@ OnCleanup(stopESP)
 local function buildHarden()
 genv.LoopXCode_HardenCfg = {
     SaveHistory = true, SaveUI = true, SaveMenu = true,
-    AutoClaimIndex = defaultToggle(true), AutoUpgradeTraining = false, AutoUpgradeTreadmill = false, AutoTreadmill = false,
+    AutoClaimIndex = true, AutoUpgradeTraining = false, AutoUpgradeTreadmill = false, AutoTreadmill = false,
     AdminEventTreadmill = false,
-    AntiBan = defaultToggle(true, true), GodMode = false, Fly = false, JumpInfinity = false,
-    AntiKnockDown = defaultToggle(true), Invisible = false, AntiRagdoll = defaultToggle(true, true), AutoAntiSpeed = false,
-    HidePenPet = false, LowGraphics = false, FPSUnlock = false,
-    AntiAFK = defaultToggle(true, true), AntiHit = false, SpeedBoost = false
+    AntiBan = true, GodMode = false, Fly = false, JumpInfinity = false,
+    AntiKnockDown = true, Invisible = false, AntiRagdoll = true, AutoAntiSpeed = false,
+    AntiAFK = true, AntiHit = false, SpeedBoost = false,
+    UnlockFPS = false, UnlockFPSValue = 240, AutoLow = false, HidePetPen = false
 }
-if genv.LoopXCode_HardenCfg.AntiAFK == nil then genv.LoopXCode_HardenCfg.AntiAFK = true end
--- config exported above; no local alias needed
 genv.LoopXCode_HardenEpoch = (tonumber(genv.LoopXCode_HardenEpoch) or 0) + 1
 local HARDEN_EPOCH = genv.LoopXCode_HardenEpoch
 
 -- Anti AFK: game mengirim Analytics("Idle", ...) lewat LocalPlayer.Idled.
--- VirtualUser saja tidak cukup karena reporter game ikut jalan di event yang
--- sama. Saat aktif, reporter Idled milik game diputus, lalu engine tetap dijaga
--- pakai VirtualUser. Saat dimatikan, reporter game dipasang kembali.
+-- Reporter game diputus saat aktif, engine tetap dijaga pakai VirtualUser.
 local okVU, VirtualUser = pcall(function() return game:GetService("VirtualUser") end)
 if not okVU then VirtualUser = nil end
 local AFK = genv.LoopXCode_AFKState
 if type(AFK) ~= "table" then
-    AFK = {
-        owner = nil, enabled = false, idleConn = nil, blocked = false,
-        restoreIdle = nil, restoreInputs = {}
-    }
+    AFK = { owner = nil, enabled = false, idleConn = nil, blocked = false,
+        restoreIdle = nil, restoreInputs = {} }
     genv.LoopXCode_AFKState = AFK
 end
 AFK.restoreInputs = AFK.restoreInputs or {}
-
 
 local function analyticsIdleConnection(conn)
     local fn = type(conn.Function) == "function" and conn.Function or nil
@@ -3076,9 +3316,6 @@ local function restoreGameIdleReporter()
             if analyticsIdleConnection(conn) then gameReporter = true end
         end
     end)
-    -- Jangan memasang dua reporter. Kalau reporter game masih hidup, cukup
-    -- tandai tidak blocked. Kalau tidak ada reporter sama sekali (misalnya
-    -- state diwariskan dari reload lama), pasang pengganti di sini.
     if gameReporter then
         AFK.blocked = false
         return
@@ -3091,12 +3328,12 @@ local function restoreGameIdleReporter()
         local pending = false
         AFK.restoreIdle = LocalPlayer.Idled:Connect(function(seconds)
             pending = true
-            pcall(function() remote:FireServer("Idle", seconds) end)
+            banSafeFire(remote, "Idle", seconds)
         end)
         local function active()
             if pending then
                 pending = false
-                pcall(function() remote:FireServer("Active") end)
+                banSafeFire(remote, "Active")
             end
         end
         AFK.restoreInputs[1] = UserInputService.InputBegan:Connect(active)
@@ -3105,54 +3342,39 @@ local function restoreGameIdleReporter()
     end)
 end
 
--- Anti Pause helpers dipanggil lewat genv (didefinisikan di luar buildHarden).
-
 local function setAntiAFK(enabled)
     enabled = enabled == true
-    -- Reload/execute baru mengambil alih watcher lama tanpa mengembalikan
-    -- reporter game di tengah jalan.
     if AFK.owner ~= HARDEN_EPOCH then
         local wasEnabled = AFK.enabled
         if AFK.idleConn then
             pcall(function() AFK.idleConn:Disconnect() end)
             AFK.idleConn = nil
         end
-        -- Anti Pause jalan terlepas dari toggle Anti AFK.
         AFK.owner = HARDEN_EPOCH
-        AFK.enabled = false
-        -- Reload mewarisi state dari build lama. Kalau build lama sedang aktif
-        -- tapi jalur Idle sudah diputus, tandai blocked agar toggle off
-        -- berikutnya benar-benar memasang reporter pengganti.
-        if wasEnabled and not AFK.restoreIdle then AFK.blocked = true end
+        if wasEnabled then restoreGameIdleReporter() end
     end
-    if not enabled then
+    if enabled then
+        blockGameIdleReporter()
+        if not AFK.idleConn then
+            AFK.idleConn = RunService.Heartbeat:Connect(function()
+                if AFK.enabled and HARDEN_EPOCH == genv.LoopXCode_HardenEpoch then pokeEngineActive() end
+            end)
+        end
+        AFK.enabled = true
+        pcall(genv.LoopXCode_PauseStart)
+        task.spawn(pokeEngineActive)
+    else
         if AFK.idleConn then
             pcall(function() AFK.idleConn:Disconnect() end)
             AFK.idleConn = nil
         end
-        -- Anti Pause jalan terlepas dari toggle Anti AFK.
-        restoreGameIdleReporter()
         AFK.enabled = false
-        return
+        restoreGameIdleReporter()
     end
-    blockGameIdleReporter()
-    disconnectRestoreReporter()
-    -- Baik reporter game yang diputus maupun reporter cadangan yang dilepas,
-    -- setelah ini tidak boleh ada jalur Analytics("Idle", ...) yang aktif.
-    AFK.blocked = true
-    if not AFK.idleConn then
-        AFK.idleConn = LocalPlayer.Idled:Connect(function()
-            pokeEngineActive()
-        end)
-    end
-    AFK.enabled = true
-    pcall(genv.LoopXCode_PauseStart)
-    task.spawn(pokeEngineActive)
 end
 genv.LoopXCode_SetAntiAFK = setAntiAFK
 genv.LoopXCode_AntiAFKState = function()
-    local idle = 0
-    local analytics = 0
+    local idle, analytics = 0, 0
     pcall(function()
         for _, conn in ipairs(getconnections(LocalPlayer.Idled)) do
             idle += 1
@@ -3162,8 +3384,7 @@ genv.LoopXCode_AntiAFKState = function()
     return {
         enabled = AFK.enabled, blocked = AFK.blocked,
         watcher = AFK.idleConn ~= nil, replacement = AFK.restoreIdle ~= nil,
-        idleConnections = idle, analyticsConnections = analytics,
-        owner = AFK.owner
+        idleConnections = idle, analyticsConnections = analytics, owner = AFK.owner
     }
 end
 OnCleanup(function()
@@ -3179,486 +3400,162 @@ genv.LoopXCode_HardenAlive = function()
     return HARDEN_EPOCH == genv.LoopXCode_HardenEpoch
         and (not STATE or type(STATE.alive) ~= "function" or STATE.alive())
 end
--- alive checker exported above
 
--- Anti Hit: guardian target diubah ke id bukan milik LocalPlayer supaya
--- guardian/poseidon tidak masuk mode wake dan tidak mengejar. Set_Shake juga
--- dimatikan supaya efek hit dari server tidak mengguncang layar.
--- PENTING: Anti Hit TIDAK menyembunyikan atau mengganti visual guardian.
--- Body penjaga tetap terlihat apa adanya; yang diubah hanya target/state
--- selama Auto Catch menangkap pet, lalu dipulihkan lagi.
--- Restore dulu visual guardian yang mungkin disembunyikan build lama.
-pcall(function()
-    local old = genv.LoopXCode_AntiHitState
-    if type(old) ~= "table" then return end
-    for part, t in pairs(old.guardianTransparency or {}) do
-        if part and part.Parent then pcall(function() part.Transparency = t end) end
-    end
-    for part, a in pairs(old.guardianAnchors or {}) do
-        if part and part.Parent then pcall(function() part.Anchored = a end) end
-    end
-    for o, e in pairs(old.guardianBillboards or {}) do
-        if o and o.Parent then pcall(function() o.Enabled = e end) end
-    end
-end)
-pcall(function()
-    if type(genv.LoopXCode_ReleaseGuardians) == "function" then
-        genv.LoopXCode_ReleaseGuardians()
-    end
-end)
-genv.LoopXCode_AntiHitState = {
-    shakeOriginal = nil, cache = {}, hitConnections = nil, alerts = {},
-    changeStateInstalled = false, pacified = {},
-    guardianCFrameCache = {}, freezeConn = nil,
+-- No Clip: tembus semua tembok tanpa membekukan guardian / tanpa freeze parts.
+-- Kollisi character dimatikan, ketinggian hover dijaga, dan velocity jatuh
+-- dinetralisir. Ringan: hanya sink part 2x/detik + koreksi Y di Heartbeat.
+local NoClip = {
+    active = false, parts = {}, groups = {}, hoverY = nil, lastXZ = nil,
+    conn = nil, nextSync = 0, cache = {}, shakeOriginal = nil,
+    changeStateInstalled = false, capturingPrev = nil, capturingOwned = false,
+    groupReady = false
 }
-genv.LoopXCode_AntiHitActive = false
+genv.LoopXCode_AntiHitState = NoClip
+genv.LoopXCode_NoClipState = NoClip
 
--- Simpan nilai attribute asli sekali, lalu pulihkan saat Anti Hit selesai.
--- Hanya attribute yang berubah — tidak ada part yang disentuh.
-local function releaseGuardianAttributes()
-    local state = genv.LoopXCode_AntiHitState
-    pcall(function()
-        for model, saved in pairs(state.pacified or {}) do
-            if model.Parent then
-                if saved.GTarget ~= nil then pcall(function() model:SetAttribute("GTarget", saved.GTarget) end) end
-                if saved.GState ~= nil then pcall(function() model:SetAttribute("GState", saved.GState) end) end
-                for key, value in pairs(saved.extra or {}) do
-                    pcall(function() model:SetAttribute(key, value) end)
-                end
-            end
-        end
-    end)
-    state.pacified = {}
-end
-genv.LoopXCode_ReleaseGuardians = releaseGuardianAttributes
-
--- Freeze guardian visual movement by locking RootPart CFrame client-side.
--- Server still moves them server-side, but locally we overwrite CFrame each
--- RenderStepped to keep them frozen in place. No visual hiding, no part changes.
-local function freezeGuardianVisuals()
-    local state = genv.LoopXCode_AntiHitState
-    if state.freezeConn then return end
-    if not next(state.cache) then
-        state.cache = genv.LoopXCode_CollectGuardians()
-    end
-    state.guardianCFrameCache = {}
-    state.freezeConn = RunService.RenderStepped:Connect(function()
-        for guardian in pairs(state.cache) do
-            local root = guardian and guardian:FindFirstChild("RootPart")
-            if root and root:IsA("BasePart") then
-                local saved = state.guardianCFrameCache[guardian]
-                if not saved then
-                    state.guardianCFrameCache[guardian] = root.CFrame
-                    saved = root.CFrame
-                end
-                pcall(function() root.CFrame = saved end)
-            end
-        end
-    end)
-end
-
-local function unfreezeGuardianVisuals()
-    local state = genv.LoopXCode_AntiHitState
-    if state.freezeConn then
-        state.freezeConn:Disconnect()
-        state.freezeConn = nil
-    end
-    state.guardianCFrameCache = {}
-end
-
-genv.LoopXCode_FreezeGuardians = freezeGuardianVisuals
-genv.LoopXCode_UnfreezeGuardians = unfreezeGuardianVisuals
-
-genv.LoopXCode_PacifyGuardian = function(model)
-    if not model or not model.Parent then return end
-    local state = genv.LoopXCode_AntiHitState
-    if not state.pacified[model] then
-        local extra = {}
-        for _, key in ipairs({ "TargetUserId", "PetTarget", "AttackTarget", "ChaseTarget" }) do
-            local ok, value = pcall(function() return model:GetAttribute(key) end)
-            if ok and value ~= nil then extra[key] = value end
-        end
-        state.pacified[model] = {
-            GTarget = model:GetAttribute("GTarget"),
-            GState = model:GetAttribute("GState"),
-            extra = extra,
-        }
-    end
-    pcall(function()
-        model:SetAttribute("GTarget", 0)
-        model:SetAttribute("GState", "sleep")
-    end)
-    for _, key in ipairs({ "TargetUserId", "PetTarget", "AttackTarget", "ChaseTarget" }) do
-        pcall(function() model:SetAttribute(key, 0) end)
-    end
-end
-
-genv.LoopXCode_CollectGuardians = function()
-    local found = {}
-    pcall(function()
-        for _, g in ipairs(CollectionService:GetTagged("Guardian")) do found[g] = true end
-    end)
-    for _, folderName in ipairs({ "Guardians", "PetsGame", "Pets", "Guards" }) do
-        local folder = Workspace:FindFirstChild(folderName)
-        if folder then
-            for _, o in ipairs(folder:GetDescendants()) do
-                local lower = string.lower(o.Name)
-                if o:IsA("Model") and (string.find(lower, "guard", 1, true)
-                    or string.find(lower, "boss", 1, true)
-                    or o:GetAttribute("GTarget") ~= nil) then
-                    found[o] = true
-                end
-            end
-        end
-    end
-    return found
-end
-
--- getconnections sering nggak melihat listener script game, jadi jalur utama
--- Anti Hit adalah memblokir ChangeState(FallingDown/Ragdoll) langsung di
--- Humanoid. Physics sengaja tidak diblokir: state itu dipakai engine untuk
--- simulasi jalan, kalau ditahan char jadi macet. Aman untuk live-reload karena
--- genv flag dipakai.
-local function installAntiHitStateHook(hum)
-    local state = genv.LoopXCode_AntiHitState
-    if not hum or state.changeStateInstalled then return end
-    local original = hum.ChangeState
-    if type(original) ~= "function" then return end
-    local ok, hooked = pcall(function()
-        return hookfunction(original, function(self, newState, ...)
-            if genv.LoopXCode_AntiHitActive
-                and (newState == Enum.HumanoidStateType.FallingDown
-                    or newState == Enum.HumanoidStateType.Ragdoll) then
-                return true
-            end
-            return original(self, newState, ...)
-        end)
-    end)
-    if ok and hooked then state.changeStateInstalled = true end
-end
-
-local function suppressGuardianHit()
-    local state = genv.LoopXCode_AntiHitState
-    if state.hitConnections then return end
-    local remote = RemoteFolder and RemoteFolder:FindFirstChild("GuardianHit")
-    if not remote or type(getconnections) ~= "function" then return end
-    local saved = {}
-    pcall(function()
-        for _, c in ipairs(getconnections(remote.OnClientEvent)) do
-            local fn = c.Function
-            if type(fn) == "function" then
-                saved[#saved + 1] = { signal = remote.OnClientEvent, fn = fn, conn = c }
-                pcall(function() c:Disconnect() end)
-            end
-        end
-    end)
-    state.hitConnections = saved
-end
-
-local function restoreGuardianHit()
-    local state = genv.LoopXCode_AntiHitState
-    local saved = state.hitConnections
-    if not saved then return end
-    for _, e in ipairs(saved) do
-        pcall(function() e.signal:Connect(e.fn) end)
-    end
-    state.hitConnections = nil
-end
-
-task.spawn(function()
-    local nextScan = 0
-    local wasActive = false
-    while genv.LoopXCode_HardenAlive() do
-        local active = genv.LoopXCode_HardenCfg.AntiHit
-        if active then
-            local state = genv.LoopXCode_AntiHitState
-            local char = LocalPlayer.Character
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            local root = char and char:FindFirstChild("HumanoidRootPart")
-            pcall(function() LocalPlayer:SetAttribute("Set_Shake", false) end)
-            installAntiHitStateHook(hum)
-
-            -- Guard cepat: kalau efek hit tetap sempat masuk, batalkan
-            -- launch/angular velocity dan paksa kembali ke state Running.
-            if hum and root then
-                pcall(function()
-                    local st = hum:GetState()
-                    if st == Enum.HumanoidStateType.FallingDown
-                        or st == Enum.HumanoidStateType.Ragdoll then
-                        hum:ChangeState(Enum.HumanoidStateType.Running)
-                    end
-                    local v = root.AssemblyLinearVelocity
-                    if v.Y > 35 or v.Y < -35 then
-                        root.AssemblyLinearVelocity = Vector3.new(v.X, 0, v.Z)
-                    end
-                    local av = root.AssemblyAngularVelocity
-                    if av.Magnitude > 6 then root.AssemblyAngularVelocity = Vector3.new(0, 0, 0) end
-                end)
-            end
-
-            local now = os.clock()
-            if now >= nextScan then
-                nextScan = now + 0.65
-                state.cache = genv.LoopXCode_CollectGuardians()
-                pcall(function()
-                    local pg = LocalPlayer:FindFirstChild("PlayerGui")
-                    if not pg then return end
-                    for _, o in ipairs(pg:GetDescendants()) do
-                        if o:IsA("TextLabel") and tostring(o.Text):find("CAUGHT BY THE GUARDIAN", 1, true) then
-                            state.alerts[o] = true
-                            o.Visible = false
-                            o.BackgroundTransparency = 1
-                        end
-                    end
-                end)
-            end
-            for alert in pairs(state.alerts) do
-                if alert.Parent then pcall(function() alert.Visible = false end) else state.alerts[alert] = nil end
-            end
-            for guardian in pairs(state.cache) do genv.LoopXCode_PacifyGuardian(guardian) end
-
-            -- Freeze guardian visual movement client-side
-            if not wasActive then freezeGuardianVisuals() end
-            wasActive = true
-        else
-            if wasActive then
-                unfreezeGuardianVisuals()
-                wasActive = false
-            end
-        end
-        task.wait(0.02)
-    end
-end)
-
+-- SpawnSafety milik game melewati watchdog kalau atribut Capturing/Training true,
+-- dan semua raycast/overlap-nya memakai CollisionGroup HumanoidRootPart.
+-- Dua kunci itu dipakai bersama supaya keluar dari tembok nggak di-teleport
+-- balik ke safe spot. Tidak ada part guardian yang dibekukan.
+local NOCLIP_GROUP = "LXC_NoClip"
+local PhysicsService = game:GetService("PhysicsService")
 pcall(function()
-    CollectionService:GetInstanceAddedSignal("Guardian"):Connect(function(g)
-        if genv.LoopXCode_HardenCfg.AntiHit then
-            task.spawn(function() task.wait(0.05) genv.LoopXCode_PacifyGuardian(g) end)
-        end
-    end)
+    pcall(function() PhysicsService:CreateCollisionGroup(NOCLIP_GROUP) end)
+    PhysicsService:SetCollisionGroupPairEnabled(NOCLIP_GROUP, "Default", false)
+    NoClip.groupReady = true
 end)
 
-OnCleanup(function()
-    local state = genv.LoopXCode_AntiHitState
-    pcall(restoreGuardianHit)
-    pcall(genv.LoopXCode_ReleaseGuardians)
-    pcall(unfreezeGuardianVisuals)
-    if state.shakeOriginal ~= nil then
-        pcall(function() LocalPlayer:SetAttribute("Set_Shake", state.shakeOriginal) end)
+local function setSafetyCapture(enabled)
+    if enabled then
+        if not NoClip.capturingOwned then
+            NoClip.capturingPrev = LocalPlayer:GetAttribute("Capturing")
+            NoClip.capturingOwned = true
+        end
+        if LocalPlayer:GetAttribute("Capturing") ~= true then
+            pcall(function() LocalPlayer:SetAttribute("Capturing", true) end)
+        end
+    elseif NoClip.capturingOwned then
+        local prev = NoClip.capturingPrev
+        if prev ~= true and LocalPlayer:GetAttribute("Capturing") == true then
+            pcall(function() LocalPlayer:SetAttribute("Capturing", prev) end)
+        end
+        NoClip.capturingPrev = nil
+        NoClip.capturingOwned = false
     end
-end)
+end
+genv.LoopXCode_NoClipSafetyCapture = setSafetyCapture
 
--- =====================================================================
--- FEATURES: Hide Your Pet in Pen / Low Graphics / FPS Unlock
--- =====================================================================
-do
-    local LightingService = game:GetService("Lighting")
-
-    -- ---------- Hide Your Pet in Pen ----------
-    local penState = genv.LoopXCode_PenPetState
-    if type(penState) ~= "table" then
-        penState = { active = false, saved = {}, token = 0 }
-        genv.LoopXCode_PenPetState = penState
-    end
-    penState.saved = penState.saved or {}
-
-    local function restorePenVisuals()
-        for obj, saved in pairs(penState.saved) do
-            if obj.Parent then
-                pcall(function()
-                    if saved.kind == "part" then
-                        obj.Transparency = saved.value
-                    elseif saved.kind == "enabled" then
-                        obj.Enabled = saved.value
+local function applyNoClipParts(char, enabled)
+    if not char then return end
+    pcall(function()
+        for _, obj in ipairs(char:GetDescendants()) do
+            if obj:IsA("BasePart") then
+                if enabled then
+                    if NoClip.parts[obj] == nil then NoClip.parts[obj] = obj.CanCollide end
+                    if NoClip.groups[obj] == nil then NoClip.groups[obj] = obj.CollisionGroup end
+                    if obj.CanCollide then obj.CanCollide = false end
+                    if NoClip.groupReady and obj.CollisionGroup ~= NOCLIP_GROUP then
+                        pcall(function() obj.CollisionGroup = NOCLIP_GROUP end)
                     end
-                end)
-            end
-        end
-        penState.saved = {}
-    end
-
-    local function hidePenModel(model)
-        pcall(function()
-            for _, obj in ipairs(model:GetDescendants()) do
-                if obj:IsA("BasePart") or obj:IsA("Decal") or obj:IsA("Texture") then
-                    if penState.saved[obj] == nil then
-                        penState.saved[obj] = { kind = "part", value = obj.Transparency }
+                else
+                    if NoClip.parts[obj] ~= nil then
+                        if obj.Parent then obj.CanCollide = NoClip.parts[obj] end
+                        NoClip.parts[obj] = nil
                     end
-                    obj.Transparency = 1
-                elseif obj:IsA("BillboardGui") or obj:IsA("SurfaceGui") or obj:IsA("Highlight") then
-                    if penState.saved[obj] == nil then
-                        penState.saved[obj] = { kind = "enabled", value = obj.Enabled }
+                    if NoClip.groups[obj] ~= nil then
+                        if obj.Parent then pcall(function() obj.CollisionGroup = NoClip.groups[obj] end) end
+                        NoClip.groups[obj] = nil
                     end
-                    obj.Enabled = false
-                elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam")
-                    or obj:IsA("Smoke") or obj:IsA("Fire") or obj:IsA("Sparkles") then
-                    if penState.saved[obj] == nil then
-                        penState.saved[obj] = { kind = "enabled", value = obj.Enabled }
-                    end
-                    obj.Enabled = false
-                end
-            end
-        end)
-    end
-
-    local function isMyPenPet(model)
-        local owner = model:GetAttribute("Owner")
-        if owner == nil then return false end
-        local mine = LocalPlayer.UserId
-        return owner == mine or tostring(owner) == tostring(mine)
-    end
-
-    -- Hanya pet di dalam pen sendiri (PetsGame.Bases.*.Pets / PenPets).
-    -- Pet liar, pet yang sedang dipakai, dan pen pemain lain tidak disentuh.
-    local function scanPenPets()
-        local petsGame = Workspace:FindFirstChild("PetsGame")
-        if not petsGame then return end
-        local folders = {}
-        local bases = petsGame:FindFirstChild("Bases")
-        if bases then
-            for _, base in ipairs(bases:GetChildren()) do
-                local pets = base:FindFirstChild("Pets")
-                if pets then folders[#folders + 1] = pets end
-            end
-        end
-        local direct = petsGame:FindFirstChild("PenPets")
-        if direct then folders[#folders + 1] = direct end
-        for _, folder in ipairs(folders) do
-            for _, model in ipairs(folder:GetChildren()) do
-                if model:IsA("Model") and isMyPenPet(model) then
-                    hidePenModel(model)
                 end
             end
         end
-    end
-
-    genv.LoopXCode_ApplyHidePenPet = function(on)
-        local enabled = (on == true)
-        penState.active = enabled
-        penState.token = (penState.token or 0) + 1
-        local token = penState.token
-        if not enabled then
-            restorePenVisuals()
-            return
-        end
-        task.spawn(function()
-            while penState.active and penState.token == token
-                and genv.LoopXCode_HardenAlive() do
-                pcall(scanPenPets)
-                task.wait(0.4)
-            end
-        end)
-    end
-
-    -- ---------- Low Graphics ----------
-    local perfState = genv.LoopXCode_PerfState
-    if type(perfState) ~= "table" then
-        perfState = { active = false, lighting = {}, effects = {}, terrain = {}, quality = nil }
-        genv.LoopXCode_PerfState = perfState
-    end
-
-    local PERF_LIGHTING_KEYS = { "GlobalShadows", "EnvironmentDiffuseScale", "EnvironmentSpecularScale", "ShadowSoftness" }
-    local PERF_TERRAIN_KEYS = { "WaterWaveSize", "WaterWaveSpeed", "WaterReflectance", "WaterTransparency" }
-
-    local function capturePerfState()
-        perfState.lighting = {}
-        for _, key in ipairs(PERF_LIGHTING_KEYS) do
-            local ok, value = pcall(function() return LightingService[key] end)
-            if ok then perfState.lighting[key] = value end
-        end
-        perfState.effects = {}
-        pcall(function()
-            for _, obj in ipairs(LightingService:GetDescendants()) do
-                if obj:IsA("BlurEffect") or obj:IsA("BloomEffect")
-                    or obj:IsA("DepthOfFieldEffect") or obj:IsA("SunRaysEffect") then
-                    perfState.effects[obj] = obj.Enabled
-                end
-            end
-        end)
-        perfState.terrain = {}
-        for _, key in ipairs(PERF_TERRAIN_KEYS) do
-            local ok, value = pcall(function() return Workspace.Terrain[key] end)
-            if ok then perfState.terrain[key] = value end
-        end
-        perfState.quality = nil
-        pcall(function() perfState.quality = settings().Rendering.QualityLevel end)
-    end
-
-    genv.LoopXCode_ApplyLowGraphics = function(on)
-        local enabled = (on == true)
-        if enabled == perfState.active then return end
-        perfState.active = enabled
-        if enabled then
-            capturePerfState()
-            pcall(function()
-                LightingService.GlobalShadows = false
-                LightingService.EnvironmentDiffuseScale = 0
-                LightingService.EnvironmentSpecularScale = 0
-                LightingService.ShadowSoftness = 0
-            end)
-            pcall(function()
-                for obj in pairs(perfState.effects) do
-                    if obj.Parent then obj.Enabled = false end
-                end
-            end)
-            pcall(function()
-                local terrain = Workspace.Terrain
-                terrain.WaterWaveSize = 0
-                terrain.WaterWaveSpeed = 0
-                terrain.WaterReflectance = 0
-                terrain.WaterTransparency = 1
-            end)
-            pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
-        else
-            pcall(function()
-                for key, value in pairs(perfState.lighting) do LightingService[key] = value end
-            end)
-            pcall(function()
-                for obj, value in pairs(perfState.effects) do
-                    if obj.Parent then obj.Enabled = value end
-                end
-            end)
-            pcall(function()
-                local terrain = Workspace.Terrain
-                for key, value in pairs(perfState.terrain) do terrain[key] = value end
-            end)
-            if perfState.quality ~= nil then
-                pcall(function() settings().Rendering.QualityLevel = perfState.quality end)
-            end
-            perfState.lighting, perfState.effects, perfState.terrain, perfState.quality = {}, {}, {}, nil
-        end
-    end
-
-    -- ---------- FPS Unlock (max 240) ----------
-    local fpsState = genv.LoopXCode_FpsState
-    if type(fpsState) ~= "table" then
-        fpsState = { active = false, previous = nil }
-        genv.LoopXCode_FpsState = fpsState
-    end
-
-    genv.LoopXCode_ApplyFpsUnlock = function(on)
-        local enabled = (on == true)
-        if enabled == fpsState.active then return end
-        fpsState.active = enabled
-        if enabled then
-            local ok, current = pcall(function() return getfpscap() end)
-            if ok and type(current) == "number" and current > 0 then
-                fpsState.previous = current
-            end
-            local cap = math.clamp(tonumber(MiscCfg.FpsCap) or 240, 30, 240)
-            pcall(function() setfpscap(cap) end)
-        else
-            pcall(function() setfpscap(fpsState.previous or 60) end)
-            fpsState.previous = nil
-        end
-    end
-
-    OnCleanup(function()
-        pcall(function() genv.LoopXCode_ApplyHidePenPet(false) end)
-        pcall(function() genv.LoopXCode_ApplyLowGraphics(false) end)
-        pcall(function() genv.LoopXCode_ApplyFpsUnlock(false) end)
     end)
 end
+genv.LoopXCode_ApplyNoClipParts = applyNoClipParts
+
+local function stopNoClip()
+    if not NoClip.active and not NoClip.conn then return end
+    NoClip.active = false
+    genv.LoopXCode_AntiHitActive = false
+    setSafetyCapture(false)
+    if NoClip.conn then
+        pcall(function() NoClip.conn:Disconnect() end)
+        NoClip.conn = nil
+    end
+    applyNoClipParts(LocalPlayer.Character, false)
+    NoClip.hoverY, NoClip.lastXZ = nil, nil
+end
+genv.LoopXCode_StopNoClip = stopNoClip
+
+local function startNoClip()
+    if NoClip.active then return true end
+    -- NoClip dan Auto Catch/Auto Farm tidak boleh jalan bareng: hover melawan
+    -- MoveTo bikin char nyangkut di udara (Freefall) dan capture gagal semua.
+    local farmState = genv.LoopXCode_FarmCfg
+    if StealCfg.Enabled or ManualSteal.Active or (farmState and farmState.Enabled) then
+        return false
+    end
+    NoClip.active = true
+    genv.LoopXCode_AntiHitActive = true
+    pcall(setSafetyCapture, true)
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    NoClip.hoverY = root and root.Position.Y or nil
+    NoClip.lastXZ = root and Vector2.new(root.Position.X, root.Position.Z) or nil
+    applyNoClipParts(char, true)
+    if NoClip.conn then pcall(function() NoClip.conn:Disconnect() end) end
+    NoClip.conn = RunService.Heartbeat:Connect(function()
+        if not NoClip.active or HARDEN_EPOCH ~= genv.LoopXCode_HardenEpoch then return end
+        local ch = LocalPlayer.Character
+        local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        local now = os.clock()
+        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+        if now >= NoClip.nextSync then
+            applyNoClipParts(ch, true)
+            pcall(setSafetyCapture, true)
+            NoClip.nextSync = now + 0.5
+            -- Guardian bisa melempar char ke Freefall/Ragdoll. Kembalikan ke
+            -- Running supaya MoveTo Auto Catch tetap bekerja.
+            if hum then
+                local st = hum:GetState()
+                if st == Enum.HumanoidStateType.Freefall
+                    or st == Enum.HumanoidStateType.FallingDown
+                    or st == Enum.HumanoidStateType.Ragdoll
+                    or st == Enum.HumanoidStateType.Physics then
+                    pcall(function() hum:ChangeState(Enum.HumanoidStateType.Running) end)
+                end
+            end
+        end
+        local xz = Vector2.new(hrp.Position.X, hrp.Position.Z)
+        -- hoverY mengikuti ketinggian normal, TAPI tidak pernah naik karena
+        -- lemparan guardian. Kalau char terlempar, tarik balik ke hover asli.
+        if not NoClip.hoverY then
+            NoClip.hoverY = hrp.Position.Y
+        elseif hrp.Position.Y > NoClip.hoverY + 4 then
+            local st = hum and hum:GetState() or nil
+            if st ~= Enum.HumanoidStateType.Freefall
+                and st ~= Enum.HumanoidStateType.FallingDown
+                and st ~= Enum.HumanoidStateType.Ragdoll
+                and st ~= Enum.HumanoidStateType.Physics then
+                NoClip.hoverY = hrp.Position.Y
+            end
+        end
+        NoClip.lastXZ = xz
+        local v = hrp.AssemblyLinearVelocity
+        if math.abs(v.Y) > 0.01 then
+            hrp.AssemblyLinearVelocity = Vector3.new(v.X, 0, v.Z)
+        end
+        if NoClip.hoverY and math.abs(hrp.Position.Y - NoClip.hoverY) > 1 then
+            local cf = hrp.CFrame
+            hrp.CFrame = CFrame.new(cf.Position.X, NoClip.hoverY, cf.Position.Z)
+                * (cf - cf.Position)
+        end
+    end)
+    return true
+end
+genv.LoopXCode_StartNoClip = startNoClip
+OnCleanup(stopNoClip)
 
 local R_INDEX = RemoteFolder:FindFirstChild("IndexAction")
 local R_FREE = RemoteFolder:FindFirstChild("FreeReward")
@@ -3668,21 +3565,11 @@ local R_UP_DUMMY = RemoteFolder:FindFirstChild("UpgradeDummy")
 local R_UP_PEN = RemoteFolder:FindFirstChild("UpgradePen")
 
 local function hInvoke(remote, ...)
-    if not remote or not remote:IsA("RemoteFunction") then return nil end
-    local args = table.pack(...)
-    local ok, res = pcall(function()
-        return remote:InvokeServer(table.unpack(args, 1, args.n))
-    end)
-    if ok then return res end
-    return nil
+    return banSafeInvoke(remote, ...)
 end
 
 local function hFire(remote, ...)
-    if not remote or not remote:IsA("RemoteEvent") then return end
-    local args = table.pack(...)
-    pcall(function()
-        remote:FireServer(table.unpack(args, 1, args.n))
-    end)
+    return banSafeFire(remote, ...)
 end
 
 do
@@ -3713,7 +3600,7 @@ do
         local selected = genv.LoopXCode_NormalizeSellRarities(SellCfg.Rarities)
         if not next(selected) then return 0 end
 
-        local okList, list = pcall(function() return R_SELL:InvokeServer("list") end)
+        local okList, list = pcall(banSafeInvoke, R_SELL, "list")
         if not okList or type(list) ~= "table" then return 0 end
 
         local ids = {}
@@ -3728,7 +3615,7 @@ do
         if #ids == 0 then return 0 end
 
         SellCfg.Busy = true
-        local okSell, result = pcall(function() return R_SELL:InvokeServer("sell", ids) end)
+        local okSell, result = pcall(banSafeInvoke, R_SELL, "sell", ids)
         SellCfg.Busy = false
         if okSell and type(result) == "table" and result.ok then
             setStatus(tr("auto sell"), tostring(#ids) .. " " .. tr("pets"))
@@ -3758,7 +3645,11 @@ genv.LoopXCode_HardenSave = function()
             AntiKnockDown = genv.LoopXCode_HardenCfg.AntiKnockDown, Invisible = genv.LoopXCode_HardenCfg.Invisible,
             AntiRagdoll = genv.LoopXCode_HardenCfg.AntiRagdoll, AutoAntiSpeed = genv.LoopXCode_HardenCfg.AutoAntiSpeed,
             AntiAFK = genv.LoopXCode_HardenCfg.AntiAFK, AntiHit = genv.LoopXCode_HardenCfg.AntiHit,
-            SpeedBoost = genv.LoopXCode_HardenCfg.SpeedBoost, SpeedValue = SpeedCfg.Value
+            SpeedBoost = genv.LoopXCode_HardenCfg.SpeedBoost, SpeedValue = SpeedCfg.Value,
+            UnlockFPS = genv.LoopXCode_HardenCfg.UnlockFPS,
+            UnlockFPSValue = genv.LoopXCode_HardenCfg.UnlockFPSValue,
+            AutoLow = genv.LoopXCode_HardenCfg.AutoLow,
+            HidePetPen = genv.LoopXCode_HardenCfg.HidePetPen
         })
     end)
     if genv.LoopXCode_HardenCfg.SaveHistory and ok and type(str) == "string" then
@@ -4338,6 +4229,176 @@ local HardenRestoreStats = function(key, stats)
     if key == "JumpInfinity" then jumpLevel = 0 end
 end
 
+-- FPS / grafis rendah / sembunyikan pet di pen: state dipakai HardenToggle.
+local LowGfxState = { active = false, savedLight = {}, savedEffect = {}, savedVisual = {} }
+genv.LoopXCode_LowGfxState = LowGfxState
+local LIGHT_KEYS = { "Ambient", "Brightness", "OutdoorAmbient", "FogColor",
+    "FogDensity", "FogStart", "FogEnd", "ExposureCompensation", "ClockTime" }
+local function fpsCapValue()
+    local n = tonumber(genv.LoopXCode_HardenCfg.UnlockFPSValue)
+    if not n then n = 240 end
+    if n < 1 or n > 1000 then n = 240 end
+    return math.floor(n)
+end
+genv.LoopXCode_GetFpsCap = fpsCapValue
+
+local function setFpsCap(value)
+    local n = tonumber(value) or fpsCapValue()
+    if n < 1 or n > 1000 then n = fpsCapValue() end
+    n = math.floor(n)
+    pcall(function()
+        if type(setfpscap) == "function" then setfpscap(n)
+        elseif type(set_fps_cap) == "function" then set_fps_cap(n) end
+    end)
+end
+genv.LoopXCode_SetFpsCap = setFpsCap
+
+local function activeFpsCap()
+    return genv.LoopXCode_HardenCfg.UnlockFPS == true and fpsCapValue() or 60
+end
+
+local function setFpsCapValue(v)
+    local n = tonumber(v)
+    if not n or n < 1 or n > 1000 then n = 240 end
+    n = math.floor(n)
+    genv.LoopXCode_HardenCfg.UnlockFPSValue = n
+    if genv.LoopXCode_HardenCfg.UnlockFPS then setFpsCap(n) end
+    pcall(function() genv.LoopXCode_HardenSave() end)
+    return n
+end
+genv.LoopXCode_SetFpsCapValue = setFpsCapValue
+
+local function applyLowGraphics(enabled)
+    enabled = enabled == true
+    if enabled then
+        if not LowGfxState.active then
+            LowGfxState.savedLight, LowGfxState.savedEffect = {}, {}
+            for _, key in ipairs(LIGHT_KEYS) do
+                pcall(function() LowGfxState.savedLight[key] = Lighting[key] end)
+            end
+            pcall(function()
+                for _, obj in ipairs(Lighting:GetDescendants()) do
+                    if obj:IsA("PostEffect") and obj.Enabled then
+                        LowGfxState.savedEffect[obj] = true
+                        obj.Enabled = false
+                    end
+                end
+            end)
+        end
+        pcall(function()
+            Lighting.Ambient = Color3.new(1, 1, 1)
+            Lighting.OutdoorAmbient = Color3.new(1, 1, 1)
+            Lighting.Brightness = 2
+            Lighting.FogColor = Color3.new(1, 1, 1)
+            Lighting.FogDensity = 0
+            Lighting.FogStart = 0
+            Lighting.FogEnd = 1000000
+            Lighting.ExposureCompensation = 0
+            Lighting.ClockTime = 12
+        end)
+        pcall(function()
+            local terrain = Workspace:FindFirstChildOfClass("Terrain")
+            if terrain then
+                terrain.WaterColor = Color3.new(1, 1, 1)
+                terrain.WaterTransparency = 1
+                terrain.WaterReflectance = 0
+            end
+        end)
+        -- Mode putih: hapus material tekstur/efek visual sekali jalan, simpan
+        -- nilai aslinya supaya bisa dikembalikan kalau toggle dimatikan.
+        if not next(LowGfxState.savedVisual) then
+            pcall(function()
+                for _, obj in ipairs(Workspace:GetDescendants()) do
+                    pcall(function()
+                        if obj:IsA("BasePart") and obj.ClassName ~= "Terrain" then
+                            LowGfxState.savedVisual[obj] = {
+                                kind = "part", color = obj.Color, material = obj.Material
+                            }
+                            obj.Color = Color3.new(1, 1, 1)
+                            obj.Material = Enum.Material.Plastic
+                        elseif obj:IsA("Decal") or obj:IsA("Texture") then
+                            LowGfxState.savedVisual[obj] = { kind = "visible", value = obj.Visible }
+                            obj.Visible = false
+                        elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam")
+                            or obj:IsA("Highlight") or obj:IsA("BillboardGui") or obj:IsA("SurfaceGui") then
+                            LowGfxState.savedVisual[obj] = { kind = "enabled", value = obj.Enabled }
+                            obj.Enabled = false
+                        end
+                    end)
+                end
+            end)
+        end
+        LowGfxState.active = true
+        setFpsCap(activeFpsCap())
+    else
+        if LowGfxState.active then
+            for key, value in pairs(LowGfxState.savedLight) do
+                pcall(function() Lighting[key] = value end)
+            end
+            for obj in pairs(LowGfxState.savedEffect) do
+                if obj.Parent then pcall(function() obj.Enabled = true end) end
+            end
+            for obj, saved in pairs(LowGfxState.savedVisual) do
+                if obj.Parent then
+                    pcall(function()
+                        if saved.kind == "part" then
+                            obj.Color = saved.color
+                            obj.Material = saved.material
+                        elseif saved.kind == "visible" then
+                            obj.Visible = saved.value
+                        elseif saved.kind == "enabled" then
+                            obj.Enabled = saved.value
+                        end
+                    end)
+                end
+            end
+        end
+        LowGfxState.savedLight, LowGfxState.savedEffect, LowGfxState.savedVisual = {}, {}, {}
+        LowGfxState.active = false
+        setFpsCap(activeFpsCap())
+    end
+end
+genv.LoopXCode_ApplyLowGraphics = applyLowGraphics
+
+local HidePetPenState = { active = false, saved = {}, thread = nil }
+genv.LoopXCode_HidePetPenState = HidePetPenState
+local function restoreHidePetPen()
+    for obj, saved in pairs(HidePetPenState.saved) do
+        if obj.Parent then
+            pcall(function()
+                if saved.kind == "transparency" then obj.Transparency = saved.value
+                elseif saved.kind == "enabled" then obj.Enabled = saved.value end
+            end)
+        end
+    end
+    HidePetPenState.saved = {}
+end
+local function applyHidePetPen()
+    pcall(function()
+        local cs = game:GetService("CollectionService")
+        for _, model in ipairs(cs:GetTagged("PenPet")) do
+            if model:IsA("Model")
+                and tostring(model:GetAttribute("Owner")) == tostring(LocalPlayer.UserId) then
+                for _, obj in ipairs(model:GetDescendants()) do
+                    if obj:IsA("BasePart") then
+                        if HidePetPenState.saved[obj] == nil then
+                            HidePetPenState.saved[obj] = { kind = "transparency", value = obj.Transparency }
+                        end
+                        if obj.Transparency < 1 then obj.Transparency = 1 end
+                    elseif obj:IsA("BillboardGui") or obj:IsA("Highlight")
+                        or obj:IsA("ParticleEmitter") or obj:IsA("Trail") then
+                        if HidePetPenState.saved[obj] == nil then
+                            HidePetPenState.saved[obj] = { kind = "enabled", value = obj.Enabled }
+                        end
+                        if obj.Enabled then obj.Enabled = false end
+                    end
+                end
+            end
+        end
+    end)
+end
+genv.LoopXCode_ApplyHidePetPen = applyHidePetPen
+
 genv.LoopXCode_HardenToggle = function(key, v)
     local FarmCfg = genv.LoopXCode_FarmCfg
     if genv.LoopXCode_HardenCfg[key] == nil then return end
@@ -4354,40 +4415,43 @@ genv.LoopXCode_HardenToggle = function(key, v)
         pcall(genv.LoopXCode_HardenSave)
         return
     end
-    if key == "HidePenPet" or key == "LowGraphics" or key == "FPSUnlock" then
+    if key == "AntiHit" then
         local enabled = (v == true)
-        genv.LoopXCode_HardenCfg[key] = enabled
-        if key == "HidePenPet" then
-            pcall(function() genv.LoopXCode_ApplyHidePenPet(enabled) end)
-        elseif key == "LowGraphics" then
-            pcall(function() genv.LoopXCode_ApplyLowGraphics(enabled) end)
-        else
-            pcall(function() genv.LoopXCode_ApplyFpsUnlock(enabled) end)
-        end
+        genv.LoopXCode_HardenCfg.AntiHit = enabled
+        if enabled then pcall(startNoClip) else pcall(stopNoClip) end
         pcall(genv.LoopXCode_HardenSave)
         return
     end
-    if key == "AntiHit" then
+    if key == "UnlockFPS" then
         local enabled = (v == true)
-        local state = genv.LoopXCode_AntiHitState
-        if enabled and state.shakeOriginal == nil then
-            state.shakeOriginal = LocalPlayer:GetAttribute("Set_Shake")
-        end
-        genv.LoopXCode_HardenCfg.AntiHit = enabled
-        genv.LoopXCode_AntiHitActive = enabled
+        genv.LoopXCode_HardenCfg.UnlockFPS = enabled
+        if enabled then setFpsCap(fpsCapValue()) else setFpsCap(60) end
+        pcall(genv.LoopXCode_HardenSave)
+        return
+    end
+    if key == "AutoLow" then
+        local enabled = (v == true)
+        genv.LoopXCode_HardenCfg.AutoLow = enabled
+        pcall(applyLowGraphics, enabled)
+        pcall(genv.LoopXCode_HardenSave)
+        return
+    end
+    if key == "HidePetPen" then
+        local enabled = (v == true)
+        genv.LoopXCode_HardenCfg.HidePetPen = enabled
+        if HidePetPenState.thread then pcall(task.cancel, HidePetPenState.thread) end
         if enabled then
-            pcall(function() LocalPlayer:SetAttribute("Set_Shake", false) end)
-            pcall(function() installAntiHitStateHook(currentHumanoid()) end)
-            pcall(suppressGuardianHit)
-            for guardian in pairs(state.cache) do genv.LoopXCode_PacifyGuardian(guardian) end
+            applyHidePetPen()
+            HidePetPenState.active = true
+            HidePetPenState.thread = task.spawn(function()
+                while HidePetPenState.active and genv.LoopXCode_HardenAlive() do
+                    task.wait(1.5)
+                    applyHidePetPen()
+                end
+            end)
         else
-            genv.LoopXCode_AntiHitActive = false
-            pcall(restoreGuardianHit)
-            pcall(genv.LoopXCode_ReleaseGuardians)
-            if state.shakeOriginal ~= nil then
-                pcall(function() LocalPlayer:SetAttribute("Set_Shake", state.shakeOriginal) end)
-                state.shakeOriginal = nil
-            end
+            HidePetPenState.active = false
+            restoreHidePetPen()
         end
         pcall(genv.LoopXCode_HardenSave)
         return
@@ -4717,10 +4781,8 @@ LocalPlayer.CharacterAdded:Connect(function()
         HardenRestore[key] = HardenCaptureStats()
     end
     jumpLevel = 0
-    genv.LoopXCode_AntiHitState.changeStateInstalled = false
-    if genv.LoopXCode_HardenCfg.AntiHit then
-        pcall(function() installAntiHitStateHook(currentHumanoid()) end)
-    end
+    if genv.LoopXCode_HardenCfg.AntiHit then pcall(startNoClip) end
+    if genv.LoopXCode_HardenCfg.HidePetPen then pcall(applyHidePetPen) end
 end)
 end
 
@@ -4798,25 +4860,22 @@ genv.LoopXCode_TestAntiHit = function()
     local prev = genv.LoopXCode_HardenCfg.AntiHit
     pcall(function() genv.LoopXCode_HardenToggle("AntiHit", true) end)
     local char = LocalPlayer.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
     local root = char and char:FindFirstChild("HumanoidRootPart")
-    if not hum or not root then return { passed = false, reason = "no character" } end
+    if not root then return { passed = false, reason = "no character" } end
+    task.wait(0.4)
+    local colliding = 0
     pcall(function()
-        hum:ChangeState(Enum.HumanoidStateType.FallingDown)
-        root.AssemblyLinearVelocity = Vector3.new(0, 135, 0)
-        root.AssemblyAngularVelocity = Vector3.new(14, 6, 14)
+        for _, obj in ipairs(char:GetDescendants()) do
+            if obj:IsA("BasePart") and obj.CanCollide then colliding += 1 end
+        end
     end)
-    task.wait(0.8)
-    local st = hum:GetState()
-    local v = root.AssemblyLinearVelocity
-    local av = root.AssemblyAngularVelocity
-    local badState = (st == Enum.HumanoidStateType.FallingDown
-        or st == Enum.HumanoidStateType.Ragdoll
-        or st == Enum.HumanoidStateType.Physics)
     local result = {
-        passed = (not badState) and math.abs(v.Y) < 40 and av.Magnitude < 6,
-        state = tostring(st), velY = v.Y, angular = av.Magnitude,
-        active = genv.LoopXCode_AntiHitActive
+        passed = colliding == 0 and genv.LoopXCode_AntiHitActive == true
+            and LocalPlayer:GetAttribute("Capturing") == true,
+        collidingParts = colliding, hoverY = genv.LoopXCode_NoClipState.hoverY,
+        active = genv.LoopXCode_AntiHitActive,
+        safetyCapture = LocalPlayer:GetAttribute("Capturing") == true,
+        collisionGroupReady = genv.LoopXCode_NoClipState.groupReady
     }
     pcall(function() genv.LoopXCode_HardenToggle("AntiHit", prev) end)
     return result
@@ -4825,16 +4884,67 @@ end
 -- =====================================================================
 -- 5. DAFTARKAN SEMUA KOMPONEN KE REGISTRY
 -- =====================================================================
+genv.LoopXCode_Respawn = function()
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local spawn = nil
+    pcall(function()
+        local bases = Workspace:FindFirstChild("PetsGame")
+            and Workspace.PetsGame:FindFirstChild("Bases")
+        if bases then
+            for _, base in ipairs(bases:GetChildren()) do
+                if tostring(base:GetAttribute("Owner")) == tostring(LocalPlayer.UserId) then
+                    spawn = base:FindFirstChild("BaseSpawn")
+                    if spawn then break end
+                end
+            end
+        end
+        spawn = spawn or Workspace:FindFirstChild("SpawnLocation")
+        local safe = Workspace:FindFirstChild("PetsGame")
+            and Workspace.PetsGame:FindFirstChild("SafeZone")
+        spawn = spawn or (safe and safe:FindFirstChild("SafeZoneArea"))
+    end)
+    if hum then pcall(function() hum.Health = hum.MaxHealth end) end
+    if root and spawn then
+        pcall(function()
+            local cf = spawn.CFrame
+            root.CFrame = CFrame.new(cf.Position.X, cf.Position.Y + 3.5, cf.Position.Z)
+                * (cf - cf.Position)
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.AssemblyAngularVelocity = Vector3.zero
+        end)
+    end
+    if hum then
+        pcall(function() hum:ChangeState(Enum.HumanoidStateType.Running) end)
+        pcall(function() hum.Sit = false end)
+    end
+    -- Respawn harus mengembalikan ketinggian hover No Clip ke spawn, kalau tidak
+    -- karakter tetap mengambang di tinggi lama setelah teleport jauh.
+    if root and genv.LoopXCode_NoClipState and genv.LoopXCode_NoClipState.active then
+        pcall(function()
+            genv.LoopXCode_NoClipState.hoverY = root.Position.Y
+            genv.LoopXCode_NoClipState.lastXZ = Vector2.new(root.Position.X, root.Position.Z)
+            genv.LoopXCode_ApplyNoClipParts(char, true)
+        end)
+    end
+    return { ok = spawn ~= nil, spawn = spawn and spawn:GetFullName() or nil }
+end
+
 AddButton("Skip Tutorial", function()
     task.spawn(SkipTutorial.Run)
 end, "Misc")
+AddButton("Respawn", function()
+    pcall(function() genv.LoopXCode_Respawn() end)
+end, "Controls")
 
-AddToggle("Enable ESP", true, function(v) ESPConfig.Enabled = v end, "ESP")
-AddToggle("Pet ESP", true, function(v) ESPConfig.ESPPets = v end, "ESP")
-AddToggle("Guardian ESP", false, function(v) ESPConfig.ESPGuards = v end, "ESP")
-AddToggle("Player ESP", true, function(v) ESPConfig.ESPPlayers = v end, "ESP")
-AddToggle("ESP Info", true, function(v) ESPConfig.ShowInfo = v end, "ESP")
-AddDropdown("ESP Range", { "All", "300 studs", "800 studs", "1500 studs" }, "All", function(v)
+AddToggle("Pet ESP", ESPConfig.ESPPets, function(v) ESPConfig.ESPPets = v end, "ESP")
+AddToggle("Guardian ESP", ESPConfig.ESPGuards, function(v) ESPConfig.ESPGuards = v end, "ESP")
+AddToggle("Player ESP", ESPConfig.ESPPlayers, function(v) ESPConfig.ESPPlayers = v end, "ESP")
+AddToggle("ESP Info", ESPConfig.ShowInfo, function(v) ESPConfig.ShowInfo = v end, "ESP")
+AddToggle("Fixed Size", ESPConfig.FixedSize, function(v) ESPConfig.FixedSize = v end, "ESP")
+AddToggle("Team Check", ESPConfig.TeamCheck, function(v) ESPConfig.TeamCheck = v end, "ESP")
+AddDropdown("ESP Range", { "300 studs", "800 studs", "1500 studs", "All" }, "1500 studs", function(v)
     if v == "All" then
         ESPConfig.MaxDistance = math.huge
     else
@@ -4847,9 +4957,8 @@ do
         "AutoClaimIndex", "AutoUpgradeTraining", "AutoUpgradeTreadmill", "AutoTreadmill",
         "AdminEventTreadmill",
         "AntiBan", "AntiAFK", "GodMode", "Fly", "JumpInfinity", "AntiKnockDown",
-        "Invisible", "AntiRagdoll", "AutoAntiSpeed",
-        "HidePenPet", "LowGraphics", "FPSUnlock",
-        "AntiHit", "SpeedBoost"
+        "Invisible", "AntiRagdoll", "AutoAntiSpeed", "AntiHit", "SpeedBoost",
+        "UnlockFPS", "AutoLow", "HidePetPen"
     }
     genv.LoopXCode_HardenFeatureKeys = keys
     local labels = {
@@ -4859,8 +4968,9 @@ do
         AntiBan = "Anti Ban", AntiAFK = "Anti AFK", GodMode = "God Mode",
         Fly = "Fly", JumpInfinity = "Jump Infinity", AntiKnockDown = "Anti Knock Down",
         Invisible = "Invisible", AntiRagdoll = "Anti Ragdoll", AutoAntiSpeed = "Auto Anti Speed",
-        HidePenPet = "Hide Your Pet in Pen", LowGraphics = "Low Graphics", FPSUnlock = "FPS Unlock",
-        AntiHit = "Anti Hit", SpeedBoost = "Speed Boost"
+        AntiHit = "Tembus Tembok", SpeedBoost = "Speed Boost",
+        UnlockFPS = "Unlock FPS", AutoLow = "Auto Low / Performance",
+        HidePetPen = "Hide Your Pet in Pen"
     }
     genv.LoopXCode_HardenFeatureLabels = labels
     for _, key in ipairs(keys) do
@@ -4869,16 +4979,21 @@ do
         if key ~= "AdminEventTreadmill" and key ~= "SpeedBoost" then
             AddToggle(labels[key], genv.LoopXCode_HardenCfg[key] ~= false, function(v)
                 genv.LoopXCode_HardenToggle(key, v)
-            end, "Features")
+            end, "Features", HARDEN_DEFAULT_ON[key] == true)
         end
     end
+    AddInput("FPS Cap", tostring(genv.LoopXCode_HardenCfg.UnlockFPSValue),
+        "1-1000  (dipakai Unlock FPS / Auto Low)", function(v)
+            local n = genv.LoopXCode_SetFpsCapValue(v)
+            setUIValue(UIHandles["FPS Cap"], tostring(n))
+        end, "Features")
 end
 
-AddToggle("Save History", genv.LoopXCode_HardenCfg.SaveHistory ~= false, function(v)
+AddToggle("Save History", true, function(v)
     genv.LoopXCode_HardenCfg.SaveHistory = v
-end, "Misc")
-AddToggle("Save UI", true, function(v) genv.LoopXCode_HardenCfg.SaveUI = v end, "Misc")
-AddToggle("Save Menu", true, function(v) genv.LoopXCode_HardenCfg.SaveMenu = v end, "Misc")
+end, "Misc", true)
+AddToggle("Save UI", true, function(v) genv.LoopXCode_HardenCfg.SaveUI = v end, "Misc", true)
+AddToggle("Save Menu", true, function(v) genv.LoopXCode_HardenCfg.SaveMenu = v end, "Misc", true)
 AddButton("Export Config", function()
     pcall(genv.LoopXCode_HardenSave)
     local ok, enc = pcall(function()
@@ -4912,6 +5027,7 @@ local function saveNamedConfig(name)
     harden.SaveHistory = genv.LoopXCode_HardenCfg.SaveHistory
     harden.SaveUI = genv.LoopXCode_HardenCfg.SaveUI
     harden.SaveMenu = genv.LoopXCode_HardenCfg.SaveMenu
+    harden.UnlockFPSValue = genv.LoopXCode_HardenCfg.UnlockFPSValue
 
     local payload = {
         StealCfg = {
@@ -4981,6 +5097,7 @@ local function loadNamedConfig(name)
     for _, key in ipairs({ "Rarity", "Zone", "CustomIncome", "Priority", "ReelMode" }) do
         if s[key] ~= nil then StealCfg[key] = tostring(s[key]) end
     end
+    if StealCfg.ReelMode ~= "Fast" then StealCfg.ReelMode = "Fast" end
     if tonumber(s.RetryDelay) then StealCfg.RetryDelay = tonumber(s.RetryDelay) end
     if tonumber(s.WalkSpeed) then StealCfg.WalkSpeed = math.max(16, math.min(50000, tonumber(s.WalkSpeed))) end
     StealCfg.Enabled = s.Enabled == true
@@ -5012,26 +5129,26 @@ local function loadNamedConfig(name)
     pcall(function() genv.LoopXCode_ApplyAutoFarm(FarmCfg.Enabled) end)
 
     local misc = type(data.MiscCfg) == "table" and data.MiscCfg or {}
-    MiscCfg.MenuBackground = misc.MenuBackground ~= false
+    MiscCfg.MenuBackground = misc.MenuBackground == true
     MiscCfg.AutoEquipBestSpeed = misc.AutoEquipBestSpeed ~= false
     MiscCfg.AutoEquipBestPen = misc.AutoEquipBestPen == true
-    local capValue = tonumber(misc.FpsCap)
-    if capValue then
-        MiscCfg.FpsCap = math.clamp(math.floor(capValue), 30, 240)
-    end
     pcall(function() genv.LoopXCode_SetMenuBackground(MiscCfg.MenuBackground) end)
     pcall(function() genv.LoopXCode_SetAutoEquip(MiscCfg.AutoEquipBestSpeed, false) end)
     pcall(function() genv.LoopXCode_SetAutoEquipBestPen(MiscCfg.AutoEquipBestPen, false) end)
 
     local h = type(data.HudCfg) == "table" and data.HudCfg or {}
-    for _, key in ipairs({ "Width", "Height", "TextSize", "Gap", "Shadow", "ShadowOffset", "Font", "LogoFont", "X", "Y" }) do
+    for _, key in ipairs({ "Width", "Height", "TextSize", "Gap", "Shadow", "ShadowOffset", "Font", "LogoFont", "X", "Y", "Hidden" }) do
         if h[key] ~= nil then HudCfg[key] = h[key] end
     end
+    HudCfg.Hidden = h.Hidden == true
+    pcall(function() genv.LoopXCode_SetHudHidden(HudCfg.Hidden) end)
+    setHandleValue(UIHandles["Hide HUD"], HudCfg.Hidden)
     HudCfg.Shadow = shadowAmount(HudCfg.Shadow, 50) * 100
     HudCfg.ShadowOffset = math.clamp(math.floor(tonumber(HudCfg.ShadowOffset) or 1), 0, 12)
 
     local e = type(data.ESPConfig) == "table" and data.ESPConfig or {}
-    for _, key in ipairs({ "Enabled", "ESPPets", "ESPGuards", "ESPPlayers", "ShowInfo", "UpdateInterval", "ScanInterval" }) do
+    for _, key in ipairs({ "Enabled", "ESPPets", "ESPGuards", "ESPPlayers", "ShowInfo",
+        "FixedSize", "TeamCheck", "PlayerSize", "GuardSize", "PetSize", "ScanInterval" }) do
         if e[key] ~= nil then ESPConfig[key] = e[key] end
     end
     if e.MaxDistance ~= nil then
@@ -5047,6 +5164,8 @@ local function loadNamedConfig(name)
                 end
                 dst.Shadow = shadowAmount(dst.Shadow, 50) * 100
                 dst.ShadowOffset = math.clamp(math.floor(tonumber(dst.ShadowOffset) or 1), 0, 12)
+                pcall(setEspStyle, cat, "Size", dst.Size)
+                pcall(setEspStyle, cat, "Color", dst.Color)
             end
         end
     end
@@ -5054,6 +5173,9 @@ local function loadNamedConfig(name)
     if tonumber(sp.Value) then SpeedCfg.Value = math.max(16, math.min(1e6, tonumber(sp.Value))) end
 
     local hd = type(data.HardenCfg) == "table" and data.HardenCfg or {}
+    if tonumber(hd.UnlockFPSValue) then
+        genv.LoopXCode_HardenCfg.UnlockFPSValue = math.floor(math.max(1, math.min(1000, tonumber(hd.UnlockFPSValue))))
+    end
     for _, key in ipairs(genv.LoopXCode_HardenFeatureKeys) do
         if hd[key] ~= nil then
             genv.LoopXCode_HardenCfg[key] = hd[key] == true
@@ -5074,10 +5196,10 @@ local function loadNamedConfig(name)
     setHandleValue(UIHandles["Catch Zone"], StealCfg.Zone)
     setHandleValue(UIHandles["Min Income"], StealCfg.CustomIncome)
     setHandleValue(UIHandles["Walk Speed"], tostring(SpeedCfg.Value))
+    setHandleValue(UIHandles["FPS Cap"], tostring(genv.LoopXCode_HardenCfg.UnlockFPSValue))
     setHandleValue(UIHandles["Weak Lasso Catch"], StealCfg.WeakAllowed)
     setHandleValue(UIHandles["Auto Equip Best Speed"], MiscCfg.AutoEquipBestSpeed)
     setHandleValue(UIHandles["Auto Equip Best Pen"], MiscCfg.AutoEquipBestPen)
-    setHandleValue(UIHandles["FPS Cap"], tostring(MiscCfg.FpsCap))
     setHandleValue(UIHandles["Auto Sell Pet"], SellCfg.Enabled)
     setHandleValue(UIHandles["Sell Interval"], tostring(SellCfg.Interval))
     setHandleValue(UIHandles["Menu Background"], MiscCfg.MenuBackground)
@@ -5091,7 +5213,6 @@ local function loadNamedConfig(name)
     setHandleValue(UIHandles["Logo Font"], tostring(HudCfg.LogoFont))
     setHandleValue(UIHandles["ESP Range"], ESPConfig.MaxDistance == math.huge and "All" or tostring(ESPConfig.MaxDistance))
     for _, item in ipairs({
-        { "Enable ESP", ESPConfig.Enabled },
         { "Pet ESP", ESPConfig.ESPPets }, { "Guardian ESP", ESPConfig.ESPGuards },
         { "Player ESP", ESPConfig.ESPPlayers }, { "ESP Info", ESPConfig.ShowInfo },
         { "Save History", genv.LoopXCode_HardenCfg.SaveHistory }, { "Save UI", genv.LoopXCode_HardenCfg.SaveUI },
@@ -5101,8 +5222,7 @@ local function loadNamedConfig(name)
     pcall(function() genv.LoopXCode_ApplyHudLayout() end)
     pcall(function() genv.LoopXCode_ApplyLanguage() end)
     pcall(function() genv.LoopXCode_ReapplyFonts() end)
-    -- Finder tidak di-refresh saat load config: query/biome tidak disimpan di
-    -- config, dan refresh kedua pernah menghapus elemen lalu gagal dibuat ulang.
+    task.spawn(function() pcall(function() genv.LoopXCode_RefreshFinder() end) end)
     pcall(genv.LoopXCode_HardenSave)
     genv.LoopXCode_SuppressNotify = prevSuppress
     return true
@@ -5131,15 +5251,18 @@ local function buildWindUI()
 
     local okLib, lib
     do
-        -- WindUI memanggil cloneref/clonereference pada Instance setiap kali
-        -- membuat elemen (UpdateFont/New), bukan cuma saat load. Mengembalikan
-        -- cloneref asli setelah load membuat semua elemen baru gagal dengan
-        -- "lacking capability Plugin" — itulah sebabnya Finder kosong dan ESP
-        -- tidak pernah aktif. Override dipertahankan selama hub hidup.
+        -- WindUI memanggil cloneref/clonereference pada Instance. Di executor
+        -- dengan thread identity biasa itu bisa melempar "lacking capability
+        -- Plugin", dan versi terbaru juga kadang mengirim nil. Karena WindUI
+        -- cuma butuh referensi Instance yang sama, kembalikan saja argumennya.
+        --Override hanya saat load, lalu pulihkan setelah selesai.
         local function safeCloneref(value)
             return value
         end
-        pcall(function()
+        local oldCloneref, oldClonereference
+        local okSet = pcall(function()
+            oldCloneref = cloneref
+            oldClonereference = clonereference
             cloneref = safeCloneref
             clonereference = safeCloneref
         end)
@@ -5155,12 +5278,19 @@ local function buildWindUI()
             if type(result) == "table" then genv.LoopXCode_WindUISrc = src end
             return result
         end)
+        if okSet then
+            pcall(function()
+                cloneref = oldCloneref
+                clonereference = oldClonereference
+            end)
+        end
     end
 
     if not (okLib and type(lib) == "table" and type(lib.CreateWindow) == "function") then
         closeLoadingOverlay()
         return
     end
+    genv.LoopXCode_WindUILib = lib
     -- Library sudah siap: loading selesai di sini. Tab berikutnya dibangun di
     -- belakang layar supaya overlay nggak pernah terasa nge-stuck.
     closeLoadingOverlay()
@@ -5616,7 +5746,7 @@ local function buildWindUI()
         addStripes("PatternDiagonal", 45, 4, 0.045, 1)
         addStripes("PatternVertical", 0, 4, 0.025, 1)
 
-        local controller = { Enabled = true, Busy = false }
+        local controller = { Enabled = MiscCfg.MenuBackground == true, Busy = false }
         local alive = true
 
         local function sync()
@@ -5650,6 +5780,9 @@ local function buildWindUI()
         if menuBgController then pcall(function() menuBgController:SetEnabled(v == true) end) end
         MiscCfg.MenuBackground = (v == true)
     end
+    -- Pastikan wallpaper mengikuti default OFF sejak awal, bukan nyala karena
+    -- controller lama / fullscreen busy state yang belum tersinkron.
+    pcall(function() genv.LoopXCode_SetMenuBackground(MiscCfg.MenuBackground) end)
 
     -- WindUI animasi fullscreen 0.45 detik. Matikan layer pattern selama
     -- tween supaya animasinya ringan, lalu hidupkan lagi setelah diam.
@@ -5876,7 +6009,7 @@ local function buildWindUI()
             n = math.max(16, math.min(50000, n))
             SpeedCfg.Value = n
             StealCfg.WalkSpeed = math.max(16, math.min(50000, n))
-            if n > 16 then pcall(function() genv.LoopXCode_HardenToggle("SpeedBoost", true) end) end
+            -- Walk Speed input tidak menyalakan Speed Boost otomatis.
         end
     })
     UIHandles["Walk Speed"] = walkSpeedInput
@@ -6024,6 +6157,13 @@ local function buildWindUI()
 
     -- HUD masuk Settings, bukan Controls (satu section saja, jangan dobel).
     local HudSection = trackSection("HUD", SettingsTab:Section({ Title = "HUD", Opened = true }))
+    local hideHudToggle = HudSection:Toggle({
+        Title = "Hide HUD",
+        Desc = "Sembunyikan teks status floating supaya klik tembus ke game",
+        Value = HudCfg.Hidden,
+        Callback = function(v) pcall(function() genv.LoopXCode_SetHudHidden(v) end) end
+    })
+    UIHandles["Hide HUD"] = hideHudToggle
     HudSection:Input({
         Title = "HUD Width",
         Value = tostring(HudCfg.Width),
@@ -6110,9 +6250,9 @@ local function buildWindUI()
 
     local catchReelDropdown = CaptureSection:Dropdown({
         Title = "Catch Reel",
-        Values = { "Safe", "Fast" },
+        Values = { "Fast" },
         Value = StealCfg.ReelMode,
-        Callback = function(v) StealCfg.ReelMode = v end
+        Callback = function(v) StealCfg.ReelMode = "Fast" end
     })
     UIHandles["Catch Reel"] = catchReelDropdown
     local rarityValues = { "Any" }
@@ -6179,7 +6319,7 @@ local function buildWindUI()
                 n = math.max(16, math.min(50000, n))
                 SpeedCfg.Value = n
                 StealCfg.WalkSpeed = math.max(16, math.min(50000, n))
-                if n > 16 then pcall(function() genv.LoopXCode_HardenToggle("SpeedBoost", true) end) end
+                -- Walk Speed input tidak menyalakan Speed Boost otomatis.
             end)
         end
     end)
@@ -6248,7 +6388,7 @@ local function buildWindUI()
 
     -- ---------- Tab: Finder Pet ----------
     -- Menampilkan semua pet dari game: nama, income, rarity/tier, biome (dimap mana), dan gambar pet.
-    local FinderSection = trackSection("Pet Finder", FinderTab:Section({ Title = "Pet Finder", Opened = true }))
+    local FinderSection = FinderTab:Section({ Title = "Pet Finder", Opened = true })
 
     local FinderState = { Query = "", Biome = "All", Limit = math.huge }
     genv.LoopXCode_FinderState = FinderState
@@ -6257,11 +6397,9 @@ local function buildWindUI()
         local list = { "All" }
         local seen = { All = true }
         pcall(function()
-            for _, source in ipairs({ PC.Pets or {}, PC.EVENT_PETS or {} }) do
-                for _, pet in ipairs(source) do
-                    local b = tostring(pet and pet.Biome or "")
-                    if b ~= "" and not seen[b] then seen[b] = true list[#list + 1] = b end
-                end
+            for _, pet in ipairs(PC.Pets or {}) do
+                local b = tostring(pet and pet.Biome or "")
+                if b ~= "" and not seen[b] then seen[b] = true list[#list + 1] = b end
             end
         end)
         table.sort(list, function(a, b)
@@ -6275,7 +6413,7 @@ local function buildWindUI()
     FinderSection:Input({
         Title = "Find Pet",
         Value = "",
-        Placeholder = "Pet name, e.g. Bunny",
+        Placeholder = "Nama pet, mis. Bunny",
         Callback = function(v) FinderState.Query = tostring(v or "") end
     })
     FinderSection:Dropdown({
@@ -6298,129 +6436,96 @@ local function buildWindUI()
         return (tostring(name or ""):gsub("([a-z])([A-Z])", "%1 %2"))
     end
 
-    -- Diagnostik finder.
-    genv.LoopXCode_FinderDiag = { errors = {}, count = 0, done = false }
-
-    -- SATU paragraph + SATU tombol dibuat SAAT BUILD. Refresh tidak pernah
-    -- membuat elemen WindUI baru (executor menolaknya) — cukup SetDesc.
-    local finderResults = FinderSection:Paragraph({
-        Title = "\240\159\166\163 Live Turkey Detect | Pet Database",
-        Desc = "Loading..."
-    })
-    FinderSection:Button({
-        Title = "STEAL | Typed Pet / Turkey",
-        Desc = "Pakai nama di kolom Find Pet. Contoh: Turkey, WildTurkey, GoldenGobbler",
-        Callback = function()
-            task.spawn(function()
-                local nm = tostring(FinderState.Query or "")
-                if nm == "" then
-                    setStatus("any detect", "ketik nama pet dulu")
-                    return
-                end
-                local zone = (FinderState.Biome ~= "All") and FinderState.Biome or nil
-                startManualSteal(nm, zone)
-            end)
-        end
-    })
+    local finderParagraphs = {}
+    local function clearFinder()
+        for _, p in ipairs(finderParagraphs) do pcall(function() p:Destroy() end) end
+        table.clear(finderParagraphs)
+    end
 
     local function refreshFinder()
-        local diag = genv.LoopXCode_FinderDiag
-        diag.errors, diag.count, diag.done = {}, 0, false
+        clearFinder()
         local q = string.lower(FinderState.Query or "")
         local biome = FinderState.Biome or "All"
-        local lines = {}
+        local shown = 0
+        local PI = nil
+        pcall(function() PI = require(ModuleFolder:WaitForChild("PetIcons")) end)
 
-        -- 1) Deteksi turkey yang sedang spawn di dunia.
-        local live, liveDetail = 0, {}
-        pcall(function()
-            for _, model in ipairs(WildFolder:GetChildren()) do
-                local capturedBy = model:GetAttribute("CapturedBy")
-                if (capturedBy == nil or capturedBy == 0 or capturedBy == "")
-                    and model:GetAttribute("Despawning") ~= true then
-                    local nm = tostring(model:GetAttribute("PetName") or model.Name)
-                    local isTurkey = (nm:find("Turkey", 1, true) ~= nil or nm:find("Gobbler", 1, true) ~= nil)
-                    if not isTurkey then
-                        pcall(function()
-                            local okEvent, ev = pcall(function() return PC.IsEventPet(nm) end)
-                            if okEvent and ev then isTurkey = true end
-                        end)
-                    end
-                    if isTurkey then
-                        live += 1
-                        local z = "?"
-                        pcall(function() z = zoneAtZ(wildRoot(model).Position.Z) end)
-                        liveDetail[#liveDetail + 1] = nm .. "@" .. tostring(z)
-                    end
+        -- PC.Get/CC.GetPetIncome/SC.MoneyMult berjalan di thread game dan mengubah
+        -- capability thread. Hitung dulu di thread terpisah, lalu pakai tabel murni
+        -- di thread yang membuat elemen WindUI.
+        local incomeReady = false
+        task.spawn(function()
+            local inc = {}
+            for _, pet in ipairs(PC.Pets or {}) do
+                if type(pet) == "table" and pet.Name then
+                    local n = tostring(pet.Name)
+                    local cfg = petCfg(n)
+                    inc[n] = petIncome(cfg)
                 end
             end
+            genv.LoopXCode_FinderIncome = inc
+            incomeReady = true
         end)
-        lines[#lines + 1] = "LIVE TURKEY: " .. tostring(live)
-            .. (#liveDetail > 0 and (" | " .. table.concat(liveDetail, " | ")) or "")
-        lines[#lines + 1] = ""
-
-        -- 2) Database pet + pet event/turkey.
-        local allPets = {}
-        for _, source in ipairs({ PC.Pets or {}, PC.EVENT_PETS or {} }) do
-            for _, pet in ipairs(source) do allPets[#allPets + 1] = pet end
+        local incomeGuard = 0
+        while not incomeReady and incomeGuard < 300 do
+            task.wait()
+            incomeGuard += 1
         end
-        for _, pet in ipairs(allPets) do
-            if diag.count >= (FinderState.Limit or 70) then break end
-            local okPet, petErr = pcall(function()
-                if type(pet) ~= "table" or not pet.Name then return end
+        local incomes = genv.LoopXCode_FinderIncome or {}
+
+        for _, pet in ipairs(PC.Pets or {}) do
+            if shown >= (FinderState.Limit or 70) then break end
+            if type(pet) == "table" and pet.Name then
                 local name = tostring(pet.Name)
                 local display = tostring(pet.Display or humanize(name))
                 local petBiome = tostring(pet.Biome or "?")
                 local matchQ = (q == "" or string.lower(name):find(q, 1, true) ~= nil
                     or string.lower(display):find(q, 1, true) ~= nil)
-                if not ((biome == "All" or petBiome == biome) and matchQ) then return end
-                local cfg = petCfg(name)
-                local income = petIncome(cfg)
-                local tier = tostring(pet.Tier or (cfg and cfg.Tier) or "Common")
-                local rarity = tostring(pet.Rarity or "Common")
-                local eventTag = pet.Event and (" EVENT:" .. tostring(pet.Event)) or ""
-                lines[#lines + 1] = string.format("%s | %s/s | %s | T%s | %s%s",
-                    display, fmtIncome(income), rarity, tier, petBiome, eventTag)
-                diag.count += 1
-            end)
-            if not okPet then diag.errors[#diag.errors + 1] = tostring(petErr) end
-        end
-        if diag.count == 0 then lines[#lines + 1] = "No match." end
-        diag.text = table.concat(lines, "\n"):sub(1, 600)
-        diag.handle = type(finderResults)
-        diag.setdesc = type(finderResults and finderResults.SetDesc)
-        local keys = {}
-        for k, v in pairs(finderResults or {}) do
-            keys[#keys + 1] = tostring(k) .. ":" .. type(v)
-        end
-        diag.keys = table.concat(keys, ", ")
-        pcall(function()
-            local ef = finderResults.ElementFrame
-            diag.ef = tostring(ef)
-            if ef and typeof(ef) == "Instance" then
-                diag.efclass = ef.ClassName
-                diag.efname = ef.Name
-                local kids = {}
-                for _, o in ipairs(ef:GetDescendants()) do
-                    kids[#kids + 1] = o.Name .. ":" .. o.ClassName
-                        .. (o:IsA("TextLabel") and ("=[" .. tostring(o.Text):sub(1, 40) .. "]") or "")
+                if (biome == "All" or petBiome == biome) and matchQ then
+                    local income = tonumber(incomes[name]) or 0
+                    local tier = tostring(pet.Tier or "Common")
+                    local rarity = tostring(pet.Rarity or "Common")
+                    local icon = nil
+                    pcall(function()
+                        -- Ambil langsung dari tabel modul. Memanggil PI.Get() dari game
+                        -- mengubah capability thread dan bikin WindUI gagal membuat elemen.
+                        if PI then icon = PI[name] end
+                    end)
+                    local okPara, para = pcall(function()
+                        return FinderSection:Paragraph({
+                            Title = string.format("%s  |  %s/s", display, fmtIncome(income)),
+                            Desc = string.format("Rarity: %s  |  Tier: %s  |  Map/Biome: %s  |  Speed: %s",
+                                rarity, tier, petBiome, tostring(pet.Speed or "-")),
+                            Image = icon,
+                            Buttons = {{
+                                Title = "STEAL | " .. display,
+                                Callback = function()
+                                    task.spawn(function() startManualSteal(name) end)
+                                end
+                            }}
+                        })
+                    end)
+                    if okPara and para then
+                        finderParagraphs[#finderParagraphs + 1] = para
+                        pcall(function()
+                            if icon and type(para.SetImage) == "function" then para:SetImage(icon) end
+                        end)
+                    end
+                    shown += 1
                 end
-                diag.kids = table.concat(kids, " | ")
             end
-            local pf = finderResults.ParagraphFrame or {}
-            local pfk = {}
-            for k, v in pairs(pf) do pfk[#pfk + 1] = tostring(k) .. ":" .. type(v) end
-            diag.pf = table.concat(pfk, ", ")
-        end)
-        local okSet, setErr = pcall(function() finderResults:SetDesc(table.concat(lines, "\n")) end)
-        if not okSet then diag.errors[#diag.errors + 1] = "SetDesc: " .. tostring(setErr) end
-        diag.done = true
+        end
+        genv.LoopXCode_FinderBuilt = shown
+        pcall(reapplyFonts)
     end
     FinderSection:Button({
         Title = "Refresh Finder",
         Callback = function() task.spawn(refreshFinder) end
     })
     genv.LoopXCode_RefreshFinder = refreshFinder
-    pcall(refreshFinder)
+    -- BuildFinder dipanggil dari thread terpisah supaya pembuatan ratusan
+    -- elemen WindUI tidak memakai thread capability yang sama dengan loader.
+    task.spawn(function() pcall(refreshFinder) end)
 
     -- ---------- Tab: Settings ----------
     local Sections = {
@@ -6475,36 +6580,23 @@ local function buildWindUI()
             handle = target:Toggle({ Title = item.Name, Value = item.Default, Callback = item.Callback })
         elseif item.Kind == "Dropdown" then
             handle = target:Dropdown({ Title = item.Name, Values = item.Values, Value = item.Default, Callback = item.Callback })
+        elseif item.Kind == "Input" then
+            handle = target:Input({
+                Title = item.Name, Value = item.Default, Placeholder = item.Placeholder,
+                Callback = item.Callback
+            })
         elseif item.Kind == "Button" then
             handle = target:Button({ Title = item.Name, Callback = item.Callback })
         end
         if handle then UIHandles[item.Name] = handle end
-        if item.Name == "FPS Unlock" then
-            local capInput = target:Input({
-                Title = "FPS Cap",
-                Value = tostring(MiscCfg.FpsCap),
-                Placeholder = "30 - 240",
-                Callback = function(v)
-                    local n = tonumber(string.match(tostring(v or ""), "%d+")) or 240
-                    MiscCfg.FpsCap = math.clamp(n, 30, 240)
-                    if genv.LoopXCode_HardenCfg.FPSUnlock then
-                        pcall(function() setfpscap(MiscCfg.FpsCap) end)
-                    end
-                end
-            })
-            UIHandles["FPS Cap"] = capInput
-        end
     end
     for _, key in ipairs(genv.LoopXCode_HardenFeatureKeys) do
         UIHandles["Harden:" .. key] = UIHandles[genv.LoopXCode_HardenFeatureLabels[key]]
     end
 
-    -- Slot bernama harus ter-restore otomatis saat execute. Kalau belum ada
-    -- saved config, loadNamedConfig cuma return false dan semua default off tetap.
-    task.spawn(function()
-        task.wait(0.15)
-        pcall(function() loadNamedConfig(ConfigCfg.Name) end)
-    end)
+    -- Execute pakai default yang sudah ditentukan daddy. Config bernama
+    -- HANYA dipakai kalau daddy menekan tombol Load Config; auto-load yang lama
+    -- bikin Anti Ban / Anti AFK / menu background nyala sendiri dari bank lama.
 
     -- ESP style: size + warna + shadow + font diatur sendiri-sendiri per kategori.
     -- "Any" = shortcut set Player, Pet, dan Guard sekaligus.
@@ -6530,8 +6622,14 @@ local function buildWindUI()
     HudGui.IgnoreGuiInset = true
     HudGui.DisplayOrder = 20
     HudGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    HudGui.Enabled = true
+    HudGui.Enabled = not HudCfg.Hidden
     HudGui.Parent = ParentGui
+    genv.LoopXCode_SetHudHidden = function(v)
+        HudCfg.Hidden = (v == true)
+        pcall(function() HudGui.Enabled = not HudCfg.Hidden end)
+        pcall(genv.LoopXCode_HardenSave)
+    end
+    pcall(genv.LoopXCode_SetHudHidden, HudCfg.Hidden)
 
     local FloatGui = Instance.new("ScreenGui")
     FloatGui.Name = "LXC_ToggleGui"
@@ -6628,28 +6726,13 @@ local function buildWindUI()
     FloatStatus.TextYAlignment = Enum.TextYAlignment.Center
     FloatStatus.RichText = true
     FloatStatus.Text = hudRichText()
-    -- Klik tembus ke game (tombol bag/inventaris). HUD cuma teks, bukan panel.
     FloatStatus.Active = false
-    FloatStatus.Selectable = false
     FloatStatus.Parent = HudGui
 
-    -- Gagang seret kecil (white resize grip). Satu-satunya bagian HUD yang
-    -- menerima input, supaya HUD tidak menghalangi klik game.
-    local HudGrip = Instance.new("ImageLabel")
-    HudGrip.Name = "HUDResizeGrip"
-    HudGrip.Size = UDim2.new(0, 14, 0, 14)
-    HudGrip.Position = UDim2.new(1, -14, 1, -14)
-    HudGrip.Image = "rbxassetid://120997033468887"
-    HudGrip.ImageColor3 = Color3.fromRGB(255, 255, 255)
-    HudGrip.BackgroundTransparency = 1
-    HudGrip.Active = true
-    HudGrip.Selectable = false
-    HudGrip.Parent = FloatStatus
-
     local function clampHudPos(pos)
-        local w = math.clamp(math.floor(tonumber(HudCfg.Width) or 460), 180, 560)
-        local h = math.clamp(math.floor(tonumber(HudCfg.Height) or 78), 48, 92)
-        local gap = math.clamp(math.floor(tonumber(HudCfg.Gap) or 6), 0, 24)
+        local w = math.max(1, math.floor(tonumber(HudCfg.Width) or 720))
+        local h = math.max(1, math.floor(tonumber(HudCfg.Height) or 108))
+        local gap = math.max(0, math.floor(tonumber(HudCfg.Gap) or 10))
         local sx, sy = HudGui.AbsoluteSize.X, HudGui.AbsoluteSize.Y
         if sx <= 0 or sy <= 0 then return pos end
         local left = math.clamp(pos.X.Offset + pos.X.Scale * sx, 0, math.max(0, sx - w))
@@ -6668,12 +6751,11 @@ local function buildWindUI()
     end
 
     applyHudLayout = function()
-        -- Dibatasi supaya HUD tidak pernah menutupi tombol bag/inventaris game.
-        -- Masih bisa diatur lebih kecil lewat menu HUD.
-        local w = math.clamp(math.floor(tonumber(HudCfg.Width) or 460), 180, 560)
-        local h = math.clamp(math.floor(tonumber(HudCfg.Height) or 78), 48, 92)
-        local ts = math.clamp(math.floor(tonumber(HudCfg.TextSize) or 14), 9, 16)
-        local gap = math.clamp(math.floor(tonumber(HudCfg.Gap) or 6), 0, 24)
+        -- "any": bebas angka berapa pun; dibulatkan dan dijaga tetap positif.
+        local w = math.max(1, math.floor(tonumber(HudCfg.Width) or 720))
+        local h = math.max(1, math.floor(tonumber(HudCfg.Height) or 108))
+        local ts = math.max(1, math.floor(tonumber(HudCfg.TextSize) or 18))
+        local gap = math.max(0, math.floor(tonumber(HudCfg.Gap) or 10))
         local sh = shadowAmount(HudCfg.Shadow, 50)
         local so = math.clamp(math.floor(tonumber(HudCfg.ShadowOffset) or 1), 0, 12)
         HudCfg.Width, HudCfg.Height, HudCfg.TextSize, HudCfg.Gap = w, h, ts, gap
@@ -6734,11 +6816,6 @@ local function buildWindUI()
         end)
     end
     MakeDraggable(FloatBtn, FloatBtn, openWindow)
-    -- HUD digeser lewat grip kecil saja; badan HUD tetap tembus klik.
-    MakeDraggable(HudGrip, FloatStatus, nil, clampHudPos, function()
-        pcall(genv.LoopXCode_HardenSave)
-    end)
-
     task.spawn(function()
         local frames, last = 0, os.clock()
         while FloatStatus and FloatStatus.Parent and genv.LoopXCode_HardenAlive() do
@@ -6777,12 +6854,26 @@ local function buildWindUI()
         installFontGuard()
         styleAllDropdowns()
         applyFeatureSearch()
-        if menuBgController then pcall(function() menuBgController:SetEnabled(true) end) end
+        if menuBgController then pcall(function() menuBgController:SetEnabled(MiscCfg.MenuBackground == true) end) end
         buildFloatingLogo()
     end)
     if not okTail then genv.LoopXCode_TailError = tostring(tailErr) end
 end
 buildWindUI()
+
+-- Default ON Catch/Farm/Sell jalan setelah UI dibangun. Auto-load config
+-- sengaja mati, jadi ini satu-satunya jalur start saat execute.
+;(function()
+    if genv.LoopXCode_StealCfg.Enabled then
+        pcall(function() genv.LoopXCode_ApplyAutoSteal(true) end)
+    end
+    if genv.LoopXCode_FarmCfg.Enabled then
+        pcall(function() genv.LoopXCode_ApplyAutoFarm(true) end)
+    end
+    if genv.LoopXCode_HardenCfg.UnlockFPS then
+        pcall(function() genv.LoopXCode_SetFpsCap(genv.LoopXCode_GetFpsCap()) end)
+    end
+end)()
 
 -- =====================================================================
 -- 7. RADIUS PASS — paling luar saja
